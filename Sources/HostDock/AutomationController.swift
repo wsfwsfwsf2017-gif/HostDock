@@ -30,7 +30,7 @@ final class AutomationController: ObservableObject {
             let listener = ControlServer(url: socketURL)
             do {
                 try await listener.start { [weak self] request in
-                    guard let self else { return ControlResponse(request.id, error: ControlFailure("DISABLED", "本机自动化已关闭。")) }
+                    guard let self else { return ControlResponse(request.id, error: ControlFailure("DISABLED", "请先在设置中开启「允许 AI 操作 HostDock」。")) }
                     return await self.handle(request)
                 }
                 guard app?.shuttingDown == false, !Task.isCancelled else { await listener.stop(); return }
@@ -56,7 +56,7 @@ final class AutomationController: ObservableObject {
         await server?.stop(); server = nil
     }
     func handle(_ request: ControlRequest) async -> ControlResponse {
-        guard enabled, app?.shuttingDown == false else { return ControlResponse(request.id, error: ControlFailure("DISABLED", "本机自动化已关闭。")) }
+        guard enabled, app?.shuttingDown == false else { return ControlResponse(request.id, error: ControlFailure("DISABLED", "请先在设置中开启「允许 AI 操作 HostDock」。")) }
         guard request.version == 1, tasks[request.id] == nil, tasks.count < 32 else {
             return ControlResponse(request.id, error: ControlFailure("INVALID_REQUEST", "协议版本不兼容、请求 ID 重复或请求过多。"))
         }
@@ -235,19 +235,14 @@ final class AutomationController: ObservableObject {
 
 struct AutomationSettingsView: View {
     @ObservedObject var controller: AutomationController
-    private var cliPath: String { Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/hostdock").path }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Label("AI 与自动化", systemImage: "terminal").font(.title2.bold())
-            Toggle("允许本机自动化", isOn: Binding(get: { controller.enabled }, set: { value in Task { await controller.setEnabled(value) } }))
+            Toggle("允许 AI 操作 HostDock", isOn: Binding(get: { controller.enabled }, set: { value in Task { await controller.setEnabled(value) } }))
                 .disabled(controller.changing)
-            Text("开启后，同一 Mac 账户下的 AI 或命令行程序可使用已保存连接，操作终端及传输文件。主机指纹确认继续由你处理。")
+            Text("允许 AI 或命令行程序通过 HostDock 连接服务器、执行命令和传输文件。")
                 .font(.system(size: 12)).foregroundStyle(DockTheme.secondary)
-            Text("命令行随应用提供，不修改系统 PATH：").font(.system(size: 12))
-            Text(cliPath + " --help").font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
-            Button("复制调用命令") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString("\"" + cliPath + "\" --help", forType: .string) }
-                .buttonStyle(DockButtonStyle())
-            Text(controller.enabled ? "已开启 · 当前 \(controller.activeCount) 个请求" : "已关闭").font(.system(size: 12)).foregroundStyle(DockTheme.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             if let notice = controller.notice { DockNotice(text: notice) }
         }.padding(26).frame(width: 560).background(DockTheme.surface).foregroundStyle(DockTheme.text).tint(DockTheme.accent)
     }

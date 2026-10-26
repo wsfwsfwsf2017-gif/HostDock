@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import importlib.util
+import json
 import plistlib
 import stat
+import struct
 import subprocess
 import tempfile
 import unittest
@@ -14,6 +16,20 @@ release = importlib.util.module_from_spec(spec); spec.loader.exec_module(release
 
 
 class ReleaseChecks(unittest.TestCase):
+    def test_icon_master_is_editable_and_build_preserves_approved_png(self):
+        root = Path(__file__).resolve().parent.parent
+        master = root / 'packaging/Icon/HostDock.png'
+        png = master.read_bytes()
+        self.assertEqual(png[:8], b'\x89PNG\r\n\x1a\n')
+        self.assertEqual(struct.unpack('>II', png[16:24]), (1024, 1024))
+        self.assertEqual(png[25], 6)  # PNG RGBA，透明边缘不能变成不透明底板。
+        document = json.loads((root / 'packaging/Icon/HostDock.photon/document.json').read_text())
+        self.assertEqual([len(layer['shape']['path']['subPaths'][0]['points']) for layer in document['layers']], [8, 12, 12])
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / 'icon.png'
+            subprocess.run(['swift', str(root / 'scripts/create-icon.swift'), str(output)], cwd=tmp, check=True)
+            self.assertEqual(output.read_bytes(), png)
+
     def fixture_app(self, root, name='HostDock.app'):
         app = root / name
         (app / 'Contents/MacOS').mkdir(parents=True)

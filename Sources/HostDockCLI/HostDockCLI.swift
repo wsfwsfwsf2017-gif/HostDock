@@ -23,7 +23,7 @@ struct HostDockCLI {
       files download --session <会话ID> --source <远端绝对路径> [--source ...] --destination <本机目录>
       cancel --request <本次请求ID>
     
-    先启动 HostDock，在“设置 → AI 与自动化”中手动开启本机自动化。
+    先启动 HostDock，在“设置 → AI 与自动化”中开启“允许 AI 操作 HostDock”。
     连接仅使用已保存的认证；主机指纹确认和认证缺失由应用处理。
     终端输入成功仅表示已发送；请通过 terminal read 读取实际结果。
     Ctrl+C 或终止 CLI 只取消本次请求。文件冲突在所属会话中处理。
@@ -55,7 +55,7 @@ struct HostDockCLI {
                 return response.ok ? 0 : 1
             } catch {
                 let failure = Task.isCancelled ? ControlFailure("CANCELLED", "本次请求已取消。")
-                    : error as? ControlFailure ?? ControlFailure("APP_UNAVAILABLE", "无法访问 HostDock，请先启动应用并开启本机自动化。")
+                    : error as? ControlFailure ?? ControlFailure("APP_UNAVAILABLE", "无法访问 HostDock，请启动应用并在设置中开启「允许 AI 操作 HostDock」。")
                 emit(ControlResponse(id, error: failure))
                 return Task.isCancelled ? 130 : 1
             }

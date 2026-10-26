@@ -7,6 +7,18 @@ import Testing
 
 @MainActor
 @Test(.enabled(if: ProcessInfo.processInfo.environment["HOSTDOCK_RENDER_CHECK"] == "1"))
+func renderAutomationSettingsInBothAppearances() async throws {
+    let fixture = try SessionFixture()
+    defer { fixture.clean() }
+    let app = fixture.app(transports: [])
+    for dark in [false, true] {
+        try await renderView(AutomationSettingsView(controller: app.automation), name: "build16-settings-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 560, height: 190))
+    }
+    await app.shutdown()
+}
+
+@MainActor
+@Test(.enabled(if: ProcessInfo.processInfo.environment["HOSTDOCK_RENDER_CHECK"] == "1"))
 func renderWorkspaceInBothAppearances() async throws {
     let fixture = try SessionFixture()
     defer { fixture.clean() }
