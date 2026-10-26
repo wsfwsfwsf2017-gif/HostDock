@@ -5,7 +5,17 @@ import SwiftUI
 // 原生终端会消费点击，活动区域需跟随 AppKit 焦点与鼠标事件。
 final class SessionTerminalView: TerminalView {
     var onFocus: (() -> Void)?
+    var onMount: (() -> Void)?
     private var focused = false
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil else { return }
+        DispatchQueue.main.async { [weak self, weak mountedWindow = window, weak responder = window?.firstResponder] in
+            // 挂载期间用户已选择其他控件时，不抢回输入焦点。
+            guard let self, let mountedWindow, self.window === mountedWindow, mountedWindow.firstResponder === responder else { return }
+            self.onMount?()
+        }
+    }
     override func mouseDown(with event: NSEvent) {
         onFocus?()
         super.mouseDown(with: event)
@@ -81,11 +91,43 @@ final class TerminalController: NSObject, TerminalViewDelegate {
     }
 }
 
+// SwiftUI 拥有每次挂载的容器；会话终端可安全移入新容器，不被旧分支清理移除。
+private final class TerminalMount: NSView {
+    private var terminal: TerminalView?
+    func bind(_ terminal: TerminalView) {
+        guard self.terminal !== terminal else { return }
+        if self.terminal?.superview === self { self.terminal?.removeFromSuperview() }
+        self.terminal = terminal
+        if window != nil { attach() }
+    }
+    private func attach() {
+        guard let terminal else { return }
+        guard terminal.superview !== self else { return }
+        terminal.removeFromSuperview()
+        terminal.translatesAutoresizingMaskIntoConstraints = true
+        terminal.autoresizingMask = [.width, .height]
+        terminal.frame = bounds
+        addSubview(terminal)
+        terminal.needsDisplay = true
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { attach() }
+    }
+}
+
 private struct TerminalSurface: NSViewRepresentable {
     let controller: TerminalController
     @Environment(\.colorScheme) private var colorScheme
-    func makeNSView(context: Context) -> TerminalView { controller.view }
-    func updateNSView(_ view: TerminalView, context: Context) { controller.applyAppearance(dark: colorScheme == .dark) }
+    func makeNSView(context: Context) -> TerminalMount {
+        let mount = TerminalMount()
+        mount.bind(controller.view)
+        return mount
+    }
+    func updateNSView(_ mount: TerminalMount, context: Context) {
+        mount.bind(controller.view)
+        controller.applyAppearance(dark: colorScheme == .dark)
+    }
 }
 
 struct TerminalPane: View {

@@ -147,9 +147,9 @@ private func assetFixture(_ index: Int, access: JumpServerAccessProfile) throws 
     #expect(await probe.endpoints.first?.host == changed.host)
     #expect(!(await probe.connected))
     let frame = app.maximizeRequest
-    #expect(try app.connect(profile: profile, password: nil, rememberPassword: true) === active && app.maximizeRequest == frame)
+    #expect(try app.connect(profile: profile, password: nil, rememberPassword: true, reusing: active) === active && app.maximizeRequest == frame)
     active.disconnect(); try await waitUntil { !active.disconnecting }
-    let again = try app.connect(profile: try #require(catalog.profiles.first), password: nil, rememberPassword: true)
+    let again = try app.connect(profile: try #require(catalog.profiles.first), password: nil, rememberPassword: true, reusing: active)
     try await waitUntil { again.connected && !again.connecting }
     #expect(again === active && again.profile.id == profile.id)
     #expect(await transport.endpoints.last?.host == changed.host && again.profile.endpoint.username == "李四@ssta@192.0.2.1")

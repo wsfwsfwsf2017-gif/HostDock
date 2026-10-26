@@ -99,7 +99,7 @@ private func jumpProfile() -> ConnectionProfile {
 }
 
 @MainActor
-@Test func gatewayProfileConnectsDeduplicatesAndCancelsByResolvedEndpoint() async throws {
+@Test func gatewayProfileReconnectsExactTabAndCancelsWithResolvedEndpoint() async throws {
     let fixture = try SessionFixture()
     defer { fixture.clean() }
     let transport = FakeSessionConnection(home: fixture.remote(0))
@@ -112,17 +112,15 @@ private func jumpProfile() -> ConnectionProfile {
     #expect(await transport.endpoints == [try profile.validated().endpoint])
     #expect(!app.connectionPickerPresented && app.selectedSession === session)
     let request = app.maximizeRequest
-    app.showConnections()
+    app.showConnection(session)
     var equivalent = profile
     equivalent.id = UUID(); equivalent.endpoint.username = "different-stale-value"
-    app.showConnections()
     let reused = try app.connectFromPicker(profile: equivalent, password: nil, rememberPassword: false)
     #expect(reused === session && app.sessions.count == 1 && app.maximizeRequest == request)
     #expect(await transport.connects == 1)
     await session.shutdown()
     app.showConnection(session)
-    // 同一已断开会话仍按最终组合用户名定位，取消不会误删旧会话。
-    app.showConnections()
+    // 重连绑定原 Tab，最终组合用户名仍由 JumpServer 配置生成。
     let reconnect = try app.connectFromPicker(profile: equivalent, password: "synthetic", rememberPassword: false)
     #expect(reconnect === session)
     app.connectionPickerPresented = false

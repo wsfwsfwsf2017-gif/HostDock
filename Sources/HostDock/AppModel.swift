@@ -27,7 +27,7 @@ final class AppModel: ObservableObject {
     @Published var workspace = WorkspaceArrangement()
     @Published var selectedSessionID: UUID? {
         didSet {
-            if let id = selectedSessionID, sessions.contains(where: { $0.id == id }) { workspace.activate(id) }
+            if let id = selectedSessionID, let index = workspace.slots.prefix(workspace.layout.rawValue).firstIndex(of: id) { workspace.focus(index) }
         }
     }
     @Published var pickerEditing = false
@@ -50,6 +50,7 @@ final class AppModel: ObservableObject {
     private var observations: [UUID: AnyCancellable] = [:]
     private var recentDrafts: [String: ConnectionProfile] = [:]
     private var pickerConnectionSelection: ConnectionPickerSelection?
+    private var pickerReconnectID: UUID?
     // true 表示弹窗新建的运行项，取消时移除；已有断开会话则保留。
     private var pickerAttempts: [UUID: Bool] = [:]
     private var pickerCleanupTask: Task<Void, Never>?
@@ -135,8 +136,7 @@ final class AppModel: ObservableObject {
         if pickerConnectionSelection == pickerSelection, let id = pickerSessionID {
             return sessions.first { $0.id == id }
         }
-        guard let profile = pickerProfile else { return nil }
-        return sessions.first { $0.profile.id == profile.id || $0.profile.endpoint == profile.endpoint }
+        return sessions.first { $0.id == pickerReconnectID }
     }
     var pickerBusy: Bool { pickerCancelling || updatingRecords || pickerSession?.connecting == true || pickerSession?.disconnecting == true }
     var hasTransfers: Bool { allSessions.contains { $0.transferring } }
@@ -148,6 +148,7 @@ final class AppModel: ObservableObject {
         guard !shuttingDown, !pickerCancelling, !connectionPickerPresented else { return }
         newProfile = ConnectionProfile(name: "", endpoint: ConnectionEndpoint(host: "", port: 22, username: ""))
         newAccessProfile = nil
+        pickerReconnectID = nil
         pickerSelection = .new
         pickerEditing = false
         pickerAuthenticating = false
@@ -158,6 +159,7 @@ final class AppModel: ObservableObject {
         guard !shuttingDown, !pickerCancelling else { return }
         if readyProfileIDs.contains(session.profile.id) { pickerSelection = .saved(session.profile.id) }
         else { useDraft(session.profile) }
+        pickerReconnectID = session.id
         pickerEditing = false
         pickerAuthenticating = false
         connectionPickerPresented = true
@@ -167,15 +169,13 @@ final class AppModel: ObservableObject {
         guard !shuttingDown, !pickerBusy else { return }
         if catalog.profiles.contains(where: { $0.id == profile.id }) { pickerSelection = .saved(profile.id) }
         else { useDraft(profile) }
+        pickerReconnectID = nil
         pickerEditing = editing
         pickerAuthenticating = authenticating
         connectionPickerPresented = true
     }
 
     func openProfile(_ profile: ConnectionProfile) throws {
-        if let existing = sessions.first(where: { $0.profile.id == profile.id || $0.profile.endpoint == profile.endpoint }), existing.connected || existing.busy {
-            selectedSessionID = existing.id; return
-        }
         if readyProfileIDs.contains(profile.id) { _ = try connect(profile: profile, password: nil, rememberPassword: true) }
         else { showProfile(profile) }
     }
@@ -185,16 +185,28 @@ final class AppModel: ObservableObject {
         selectedSessionID = workspace.slots[workspace.activeSlot]
     }
 
-    func placeTab(_ id: UUID, at index: Int) {
+    func selectTab(_ id: UUID) {
         guard sessions.contains(where: { $0.id == id }) else { return }
-        workspace.place(id, at: index)
+        workspace.select(id)
         selectedSessionID = id
     }
 
-    func moveTab(_ id: UUID, before target: UUID?) {
-        guard id != target, let from = sessions.firstIndex(where: { $0.id == id }) else { return }
-        let session = sessions.remove(at: from)
-        sessions.insert(session, at: sessions.firstIndex(where: { $0.id == target }) ?? sessions.endIndex)
+    func focusPane(_ index: Int) {
+        guard (0..<workspace.layout.rawValue).contains(index) else { return }
+        workspace.focus(index)
+        selectedSessionID = workspace.slots[index]
+    }
+
+    func removeFromSplit(_ index: Int) {
+        guard workspace.layout != .single, (0..<workspace.layout.rawValue).contains(index) else { return }
+        workspace.clear(index)
+        selectedSessionID = nil
+    }
+
+    func tabTitle(_ session: SessionModel) -> String {
+        let siblings = sessions.filter { $0.profile.name == session.profile.name }
+        guard siblings.count > 1, let index = siblings.firstIndex(where: { $0.id == session.id }) else { return session.profile.name }
+        return "\(session.profile.name) · \(index + 1)"
     }
 
     func requestCloseTab(_ session: SessionModel) {
@@ -225,6 +237,7 @@ final class AppModel: ObservableObject {
 
     func selectPickerTab(_ tab: ConnectionPickerTab) {
         guard !pickerBusy else { return }
+        pickerReconnectID = nil
         switch tab {
         case .saved: pickerSelection = .saved(savedProfiles.first?.id)
         case .recent: pickerSelection = .recent(catalog.recent.first?.id)
@@ -236,13 +249,14 @@ final class AppModel: ObservableObject {
     func connectFromPicker(profile: ConnectionProfile, password: String?, rememberPassword: Bool, accessProfile: JumpServerAccessProfile? = nil) throws -> SessionModel {
         guard connectionPickerPresented, !pickerBusy else { throw HostDockError("正在处理连接，请稍后重试。") }
         let profile = try catalog.resolve(profile, accessProfile: accessProfile).profile
-        let endpoint = profile.endpoint
-        let previous = sessions.first { $0.profile.id == profile.id || $0.profile.endpoint == endpoint }
+        let previous = sessions.first { $0.id == pickerReconnectID }
         let selected = selectedSessionID
-        let result = try connect(profile: profile, password: password, rememberPassword: rememberPassword, accessProfile: accessProfile)
+        let arrangement = workspace
+        let result = try connect(profile: profile, password: password, rememberPassword: rememberPassword, accessProfile: accessProfile, reusing: previous)
         if result.connected {
             connectionPickerPresented = false
         } else {
+            workspace = arrangement
             selectedSessionID = selected
             pickerConnectionSelection = pickerSelection
             pickerSessionID = result.id
@@ -270,30 +284,32 @@ final class AppModel: ObservableObject {
     }
 
     @discardableResult
-    func connect(profile requested: ConnectionProfile, password: String?, rememberPassword: Bool, accessProfile: JumpServerAccessProfile? = nil) throws -> SessionModel {
+    func connect(profile requested: ConnectionProfile, password: String?, rememberPassword: Bool, accessProfile: JumpServerAccessProfile? = nil, reusing previous: SessionModel? = nil) throws -> SessionModel {
         guard !shuttingDown, !updatingRecords, !pickerCancelling else { throw HostDockError("正在处理连接，请稍后重试。") }
-        if let existing = sessions.first(where: { $0.profile.id == requested.id }), existing.connected || existing.busy {
-            selectedSessionID = existing.id; return existing
+        if let previous {
+            guard sessions.contains(where: { $0 === previous }) else { throw HostDockError("原会话已关闭，请重新打开连接。") }
+            if previous.connected || previous.busy { selectTab(previous.id); return previous }
         }
         let resolved = try catalog.resolve(requested, accessProfile: accessProfile)
         var profile = resolved.profile
-        if let existing = sessions.first(where: { $0.profile.endpoint == profile.endpoint }), existing.connected || existing.busy {
-            selectedSessionID = existing.id
-            return existing
-        }
         if !catalog.profiles.contains(where: { $0.id == profile.id }), let saved = catalog.profile(for: profile.endpoint) {
             profile.id = saved.id
         }
         _ = try catalog.validate(profile)
         let session: SessionModel
-        if let previous = sessions.first(where: { $0.profile.id == profile.id || $0.profile.endpoint == profile.endpoint }) { session = previous }
+        if let previous { session = previous }
         else {
             session = SessionModel(profile: profile, catalog: catalog, credentials: credentials,
                                    connection: makeConnection(), reservations: reservations)
             session.terminal.view.onFocus = { [weak self, weak session] in
                 guard let self, let session, !self.shuttingDown, self.selectedSessionID != session.id,
-                      self.sessions.contains(where: { $0.id == session.id }) else { return }
-                self.selectedSessionID = session.id
+                      let index = self.workspace.slots.prefix(self.workspace.layout.rawValue).firstIndex(of: session.id),
+                      self.workspace.expandedSessionID == nil || self.workspace.expandedSessionID == session.id else { return }
+                self.focusPane(index)
+            }
+            session.terminal.view.onMount = { [weak self, weak session] in
+                guard let self, let session, !self.shuttingDown, self.selectedSessionID == session.id else { return }
+                focusWorkspaceSession(self, id: session.id)
             }
             session.onConnected = { [weak self] id in
                 guard let self else { return }
@@ -302,7 +318,7 @@ final class AppModel: ObservableObject {
                     self.rememberAccessSelection(access)
                 }
                 if self.pickerAttempts.removeValue(forKey: id) != nil {
-                    self.selectedSessionID = id
+                    self.selectTab(id)
                     self.connectionPickerPresented = false
                 }
                 if self.selectedSessionID == id { self.maximizeRequest += 1 }
@@ -310,7 +326,7 @@ final class AppModel: ObservableObject {
             sessions.append(session)
             observations[session.id] = session.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         }
-        selectedSessionID = session.id
+        selectTab(session.id)
         session.connect(profile: profile, password: password, rememberPassword: rememberPassword, accessProfile: resolved.access)
         return session
     }
@@ -406,10 +422,16 @@ final class AppModel: ObservableObject {
         await session.shutdown()
         sessions.removeAll { $0.id == session.id }
         backgroundSessions.removeAll { $0.id == session.id }
-        workspace.remove(session.id)
+        if session.origin == .interactive {
+            workspace.remove(session.id)
+            if sessions.isEmpty { workspace = WorkspaceArrangement() }
+        }
         observations.removeValue(forKey: session.id)
         pickerAttempts.removeValue(forKey: session.id)
-        if selectedSessionID == session.id { selectedSessionID = sessions.first?.id }
+        if selectedSessionID == session.id {
+            selectedSessionID = workspace.slots[workspace.activeSlot]
+            if workspace.layout == .single, let next = sessions.first { selectTab(next.id) }
+        }
     }
 
     func shutdown() async {

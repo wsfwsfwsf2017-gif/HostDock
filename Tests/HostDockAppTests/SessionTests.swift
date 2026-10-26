@@ -42,14 +42,14 @@ import HostDockCore
 }
 
 @MainActor
-@Test func sessionsDeduplicateAndKeepDirectoriesTerminalsAndDisconnectIsolated() async throws {
+@Test func explicitReconnectKeepsDirectoriesTerminalsAndDisconnectIsolated() async throws {
     let fixture = try SessionFixture()
     defer { fixture.clean() }
     let first = FakeSessionConnection(home: fixture.remote(0))
     let second = FakeSessionConnection(home: fixture.remote(1))
     let app = fixture.app(transports: [first, second])
     let a = try app.connect(profile: fixture.profiles[0], password: "synthetic", rememberPassword: false)
-    #expect(try app.connect(profile: fixture.profiles[0], password: nil, rememberPassword: true) === a)
+    #expect(try app.connect(profile: fixture.profiles[0], password: nil, rememberPassword: true, reusing: a) === a)
     let b = try app.connect(profile: fixture.profiles[1], password: "synthetic", rememberPassword: false)
     try await waitUntil { a.connected && b.connected && !a.connecting && !b.connecting }
     #expect(app.sessions.count == 2 && app.catalog.recent.count == 2)
@@ -59,8 +59,8 @@ import HostDockCore
     let bPath = b.remote.path
     let selected = try #require(a.local.roots.first)
     a.local.selection = [selected.entry.path]
-    app.selectedSessionID = b.id
-    app.selectedSessionID = a.id
+    app.selectTab(b.id)
+    app.selectTab(a.id)
     #expect(app.maximizeRequest == 1)
     #expect(a.local.path == aPath && b.remote.path == bPath && a.local.selection.contains(selected.entry.path))
     a.toggleTerminal(); b.toggleTerminal()
@@ -110,7 +110,7 @@ import HostDockCore
     await session.shutdown()
     let saved = try #require(catalog.profile(for: profile.endpoint))
     #expect(saved.remoteStartDirectory == profile.remoteStartDirectory)
-    #expect(try app.connect(profile: saved, password: nil, rememberPassword: true) === session)
+    #expect(try app.connect(profile: saved, password: nil, rememberPassword: true, reusing: session) === session)
     try await waitUntil { session.connected && !session.connecting }
     #expect(!session.remote.directoryReady && session.remote.error != nil)
     await app.shutdown()
@@ -161,7 +161,7 @@ import HostDockCore
         session.transfer(upload: true)
     }
     try await waitForReservations(app.reservations, active: 2)
-    app.selectedSessionID = b.id
+    app.selectTab(b.id)
     a.cancelTransfer()
     try await waitUntil { !a.transferring }
     #expect(b.transferring && b.connected)
@@ -197,7 +197,7 @@ import HostDockCore
     #expect(a.transferring)
     b.transfer(upload: false)
     try await waitForReservations(app.reservations, waiting: 1)
-    app.selectedSessionID = a.id
+    app.selectTab(a.id)
     await gate.open()
     try await waitUntil { !a.transferring && b.conflictRequest != nil }
     #expect(a.conflictRequest == nil && b.needsAttention)

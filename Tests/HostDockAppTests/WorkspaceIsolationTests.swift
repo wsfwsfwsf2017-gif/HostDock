@@ -28,7 +28,7 @@ private func backgroundController(_ app: AppModel) async throws -> AutomationCon
     return controller
 }
 
-@Test func workspaceSlotsKeepUniqueSessionsAcrossDropAndFifthTab() {
+@Test func workspaceSlotsKeepUniqueSessionsAcrossSelectionAndFifthTab() {
     let tabs = (0..<5).map { _ in UUID() }
     var arrangement = WorkspaceArrangement()
     arrangement.activate(tabs[0]); arrangement.setLayout(.quad, tabs: tabs)
@@ -53,9 +53,10 @@ private func backgroundController(_ app: AppModel) async throws -> AutomationCon
 }
 
 @MainActor
-@Test func manualTabsDeduplicateReorderAndNewFormStaysBlankWithoutChangingWorkspace() async throws {
+@Test func sidebarCreatesIndependentTabsAndNewFormStaysBlankWithoutChangingWorkspace() async throws {
     let fixture = try SessionFixture(); defer { fixture.clean() }
-    let app = try await preparedApp(fixture, transports: [FakeSessionConnection(home: fixture.remote(0)), FakeSessionConnection(home: fixture.remote(1))])
+    let transports = [FakeSessionConnection(home: fixture.remote(0)), FakeSessionConnection(home: fixture.remote(1)), FakeSessionConnection(home: fixture.remote(0))]
+    let app = try await preparedApp(fixture, transports: transports)
     #expect(!app.connectionPickerPresented && app.sessions.isEmpty)
     try app.openProfile(fixture.profiles[0])
     let a = try #require(app.selectedSession)
@@ -66,18 +67,88 @@ private func backgroundController(_ app: AppModel) async throws -> AutomationCon
     app.setLayout(.dual)
     let maximize = app.maximizeRequest
     try app.openProfile(a.profile)
-    #expect(app.sessions.count == 2 && app.selectedSession === a && app.workspace.slots.prefix(2).contains(a.id))
-    #expect(app.maximizeRequest == maximize)
-    app.moveTab(b.id, before: a.id)
-    #expect(app.sessions.map(\.id) == [b.id, a.id])
+    let c = try #require(app.selectedSession)
+    try await waitUntil { c.terminalReady }
+    #expect(app.sessions.count == 3 && c !== a && c.id != a.id && c.profile.id == a.profile.id)
+    #expect(app.maximizeRequest == maximize + 1 && a.connected && b.connected)
+    #expect(app.tabTitle(a) == a.profile.name + " · 1" && app.tabTitle(c) == c.profile.name + " · 2")
+    await transports[0].emit("ONLY_FIRST_TAB\r\n")
+    try await waitUntil { String(decoding: a.terminal.view.getBufferAsData(), as: UTF8.self).contains("ONLY_FIRST_TAB") }
+    #expect(!String(decoding: c.terminal.view.getBufferAsData(), as: UTF8.self).contains("ONLY_FIRST_TAB"))
     let slots = app.workspace.slots
     app.showConnections()
     #expect(app.pickerSelection == .new && app.newProfile.name.isEmpty && app.newProfile.endpoint.host.isEmpty)
-    #expect(app.selectedSession === a && app.workspace.slots == slots)
+    #expect(app.selectedSession === c && app.workspace.slots == slots)
     app.connectionPickerPresented = false
     app.requestCloseTab(a)
     try await waitUntil { !app.sessions.contains { $0.id == a.id } }
     #expect(b.connected && !a.connected && app.catalog.profiles.count == 2)
+    await app.shutdown()
+}
+
+@MainActor
+@Test func emptyPaneSelectionMovesVisibleTabAndHiddenTabsReplaceOnlyTheActivePane() async throws {
+    let fixture = try SessionFixture(); defer { fixture.clean() }
+    let transports = (0..<6).map { _ in FakeSessionConnection(home: fixture.remote(0)) }
+    let app = fixture.app(transports: transports)
+    var tabs: [SessionModel] = []
+    for _ in 0..<6 { tabs.append(try app.connect(profile: fixture.profiles[0], password: "synthetic-only", rememberPassword: false)) }
+    try await waitUntil { tabs.allSatisfy(\.terminalReady) }
+    app.setLayout(.quad)
+    #expect(Set(app.workspace.slots.compactMap { $0 }).count == 4)
+    let original = app.workspace.slots
+    let moved = try #require(original[0])
+    let removed = try #require(original[3])
+    app.removeFromSplit(3)
+    #expect(app.workspace.activeSlot == 3 && app.workspace.slots[3] == nil && app.selectedSession == nil)
+    #expect(app.sessions.first(where: { $0.id == removed })?.connected == true)
+    app.selectTab(moved)
+    #expect(app.workspace.slots[3] == moved && app.workspace.slots[0] == nil && app.selectedSessionID == moved)
+    app.focusPane(0)
+    let hidden = try #require(tabs.first { !app.workspace.slots.contains($0.id) })
+    app.selectTab(hidden.id)
+    #expect(app.workspace.slots[0] == hidden.id && app.workspace.slots[3] == moved)
+    app.focusPane(2)
+    let next = try #require(tabs.first { !app.workspace.slots.contains($0.id) })
+    app.selectTab(next.id)
+    #expect(app.workspace.slots[2] == next.id && app.workspace.slots[0] == hidden.id && app.workspace.slots[3] == moved)
+    let occupied = app.workspace.slots
+    app.selectTab(moved)
+    #expect(app.workspace.activeSlot == 3 && app.workspace.slots == occupied)
+    #expect(tabs.allSatisfy(\.connected) && Set(app.workspace.slots.compactMap { $0 }).count == 4)
+    for tab in tabs { await app.closeTab(tab) }
+    #expect(app.sessions.isEmpty && app.workspace.layout == .single && app.workspace.slots.allSatisfy { $0 == nil })
+    #expect(app.workspace.activeSlot == 0 && app.workspace.expandedSessionID == nil && app.selectedSessionID == nil)
+    app.setLayout(.quad)
+    #expect(app.workspace.layout == .single && !app.connectionPickerPresented)
+    await app.shutdown()
+}
+
+@MainActor
+@Test func reconnectingOneOfTwoIdenticalServersKeepsTheExactTabAndCancelOwnership() async throws {
+    let fixture = try SessionFixture(); defer { fixture.clean() }
+    let gate = TestGate(); await gate.open()
+    let first = FakeSessionConnection(home: fixture.remote(0))
+    let second = FakeSessionConnection(home: fixture.remote(0), connectionGate: gate)
+    let app = fixture.app(transports: [first, second])
+    let a = try app.connect(profile: fixture.profiles[0], password: "synthetic-only", rememberPassword: false)
+    let b = try app.connect(profile: fixture.profiles[0], password: "synthetic-only", rememberPassword: false)
+    try await waitUntil { a.terminalReady && b.terminalReady }
+    app.setLayout(.dual)
+    await b.shutdown(); await gate.close()
+    app.showConnection(b)
+    #expect(app.pickerSession === b)
+    #expect(try app.connectFromPicker(profile: b.profile, password: "synthetic-only", rememberPassword: false) === b)
+    app.connectionPickerPresented = false
+    try await waitUntil { !app.pickerCancelling }
+    #expect(app.sessions.count == 2 && a.connected && a.terminalReady && !b.connected && !b.connecting)
+    #expect(await first.connects == 1)
+    #expect(await second.connects <= 2)
+    await gate.open()
+    app.showConnection(b)
+    #expect(try app.connectFromPicker(profile: b.profile, password: "synthetic-only", rememberPassword: false) === b)
+    try await waitUntil { b.terminalReady && !b.connecting }
+    #expect(app.sessions.count == 2 && app.selectedSession === b && a.connected && !app.connectionPickerPresented)
     await app.shutdown()
 }
 
@@ -264,18 +335,16 @@ private func backgroundController(_ app: AppModel) async throws -> AutomationCon
     let hidden = try #require(tabs.first { !slots.contains($0.id) })
     await transports[tabs.firstIndex(where: { $0.id == hidden.id })!].emit("HIDDEN_OUTPUT\r\n")
     try await waitUntil { String(decoding: hidden.terminal.view.getBufferAsData(), as: UTF8.self).contains("HIDDEN_OUTPUT") }
-    app.placeTab(hidden.id, at: 0)
+    app.focusPane(0); app.selectTab(hidden.id)
     try await layout()
     #expect(descendants(hosting).filter { $0 === hidden.terminal.view }.count == 1)
-    app.selectedSessionID = hidden.id; app.workspace.expandedSessionID = hidden.id
+    app.selectTab(hidden.id); app.workspace.expandedSessionID = hidden.id
     try await layout()
     #expect(descendants(hosting).filter { $0 === hidden.terminal.view }.count == 1)
     #expect(descendants(hosting).contains { $0 is NSOutlineView })
     app.workspace.expandedSessionID = nil
     try await layout()
     #expect(app.workspace.slots[0] == hidden.id && tabs.allSatisfy(\.connected))
-    app.moveTab(tabs[0].id, before: nil)
-    #expect(app.sessions.last?.id == tabs[0].id)
     await controller.setEnabled(false); await app.shutdown()
 }
 
@@ -302,6 +371,65 @@ private func backgroundController(_ app: AppModel) async throws -> AutomationCon
 }
 
 @MainActor
+@Test func changingLiveWorkspaceLayoutKeepsTerminalMountedReadableAndInteractive() async throws {
+    let fixture = try SessionFixture(); defer { fixture.clean() }
+    let first = FakeSessionConnection(home: fixture.remote(0)), second = FakeSessionConnection(home: fixture.remote(1))
+    let app = fixture.app(transports: [first, second])
+    let a = try app.connect(profile: fixture.profiles[0], password: "synthetic-only", rememberPassword: false)
+    try await waitUntil { a.terminalReady }
+    let hosting = NSHostingView(rootView: WorkspaceView(app: app))
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false; window.contentView = hosting
+    defer { window.close() }
+    func layout() async throws { try await Task.sleep(for: .milliseconds(150)); hosting.layoutSubtreeIfNeeded() }
+    func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+    try await layout()
+    await first.emit("BEFORE_SPLIT_UNIQUE_MARKER\r\n")
+    try await waitUntil { String(decoding: a.terminal.view.getBufferAsData(), as: UTF8.self).contains("BEFORE_SPLIT_UNIQUE_MARKER") }
+    #expect(window.makeFirstResponder(a.terminal.view))
+    for next in [WorkspaceLayout.dual, .quad, .single, .dual] {
+        app.setLayout(next)
+        try await layout()
+        #expect(descendants(hosting).filter { $0 === a.terminal.view }.count == 1)
+        #expect(a.terminal.view.window === window)
+        #expect(a.terminal.view.bounds.width > 100 && a.terminal.view.bounds.height > 100)
+        #expect(String(decoding: a.terminal.view.getBufferAsData(), as: UTF8.self).contains("BEFORE_SPLIT_UNIQUE_MARKER"))
+        #expect(window.firstResponder === a.terminal.view)
+        #expect(await first.connects == 1)
+    }
+    let b = try app.connect(profile: fixture.profiles[1], password: "synthetic-only", rememberPassword: false)
+    try await waitUntil { b.terminalReady }
+    try await layout()
+    app.setLayout(.single); try await layout()
+    app.setLayout(.dual); try await layout()
+    for session in [a, b] {
+        #expect(descendants(hosting).filter { $0 === session.terminal.view }.count == 1)
+        #expect(session.terminal.view.window === window)
+        let mount = try #require(session.terminal.view.superview)
+        let point = session.terminal.view.convert(NSPoint(x: 40, y: 40), to: mount.superview)
+        let hit = mount.hitTest(point)
+        #expect(hit === session.terminal.view || hit?.isDescendant(of: session.terminal.view) == true)
+        #expect(window.makeFirstResponder(session.terminal.view))
+        session.terminal.view.insertText("split-input" as NSString, replacementRange: NSRange(location: NSNotFound, length: 0))
+    }
+    for _ in 0..<200 {
+        if await first.inputs == [Data("split-input".utf8)] { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(await first.inputs == [Data("split-input".utf8)])
+    #expect(await second.inputs == [Data("split-input".utf8)])
+    app.selectTab(a.id); app.workspace.expandedSessionID = a.id
+    try await layout()
+    app.workspace.expandedSessionID = nil
+    try await layout()
+    #expect(descendants(hosting).filter { $0 === a.terminal.view }.count == 1)
+    #expect(a.terminal.view.window === window && b.terminal.view.window === window)
+    #expect(await first.sizes.count > 1)
+    #expect(await second.sizes.count > 1)
+    await app.shutdown()
+}
+
+@MainActor
 @Test func nativeTerminalFocusSelectsItsPaneBeforeMenusAct() async throws {
     let fixture = try SessionFixture(); defer { fixture.clean() }
     let app = fixture.app(transports: [FakeSessionConnection(home: fixture.remote(0)), FakeSessionConnection(home: fixture.remote(1))])
@@ -313,32 +441,38 @@ private func backgroundController(_ app: AppModel) async throws -> AutomationCon
     let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800), styleMask: [.titled], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false; window.contentView = hosting
     defer { window.close() }
+    func focusSettled(_ label: String, _ condition: () -> Bool) async throws {
+        do { try await waitUntil(condition) }
+        catch { throw HostDockError("焦点检查超时：" + label) }
+    }
     try await Task.sleep(for: .milliseconds(120)); hosting.layoutSubtreeIfNeeded()
     #expect(window.makeFirstResponder(a.terminal.view))
-    try await waitUntil { app.selectedSession === a }
+    try await focusSettled("首次聚焦 A") { app.selectedSession === a }
     #expect(app.workspace.slots[app.workspace.activeSlot] == a.id)
-    app.selectedSessionID = b.id
+    app.selectTab(b.id)
     let click = try #require(NSEvent.mouseEvent(with: .leftMouseDown, location: NSPoint(x: 50, y: 80), modifierFlags: [],
         timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
     a.terminal.view.mouseDown(with: click)
     #expect(app.selectedSession === a)
-    app.selectedSessionID = b.id
+    app.selectTab(b.id)
     focusWorkspaceSession(app, id: b.id)
     try await Task.sleep(for: .milliseconds(80)); hosting.layoutSubtreeIfNeeded()
-    try await waitUntil { window.firstResponder === b.terminal.view }
+    try await focusSettled("点击 B 标签") { window.firstResponder === b.terminal.view }
     #expect(app.workspace.slots[app.workspace.activeSlot] == b.id)
     #expect(window.makeFirstResponder(a.terminal.view))
-    try await waitUntil { app.selectedSession === a }
+    try await focusSettled("原生焦点切到 A") { app.selectedSession === a }
     #expect(window.makeFirstResponder(b.terminal.view))
-    try await waitUntil { app.selectedSession === b }
+    try await focusSettled("原生焦点切到 B") { app.selectedSession === b }
     #expect(app.workspace.slots[app.workspace.activeSlot] == b.id)
-    app.selectedSessionID = nil
+    let pane = try #require(app.workspace.slots.firstIndex(of: b.id))
+    app.removeFromSplit(pane)
     try await Task.sleep(for: .milliseconds(80)); hosting.layoutSubtreeIfNeeded()
-    try await waitUntil { window.firstResponder !== a.terminal.view && window.firstResponder !== b.terminal.view }
-    app.selectedSessionID = b.id
+    try await focusSettled("移出分屏清除焦点") { window.firstResponder !== a.terminal.view && window.firstResponder !== b.terminal.view }
+    #expect(app.selectedSessionID == nil && b.connected && b.terminalReady && b.terminal.view.window == nil)
+    app.selectTab(b.id)
     focusWorkspaceSession(app, id: b.id)
     try await Task.sleep(for: .milliseconds(80)); hosting.layoutSubtreeIfNeeded()
-    try await waitUntil { window.firstResponder === b.terminal.view }
+    try await focusSettled("重新填入 B") { window.firstResponder === b.terminal.view }
     app.selectedSession?.disconnect()
     try await waitUntil { !b.connected && !b.disconnecting }
     #expect(a.connected && !b.connected)

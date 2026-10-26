@@ -27,7 +27,13 @@ struct WorkspaceArrangement {
         if expandedSessionID != nil { expandedSessionID = id }
     }
 
+    mutating func select(_ id: UUID) {
+        if slots[activeSlot] == nil { place(id, at: activeSlot) }
+        else { activate(id) }
+    }
+
     mutating func setLayout(_ next: WorkspaceLayout, tabs: [UUID]) {
+        guard !tabs.isEmpty else { self = WorkspaceArrangement(); return }
         if activeSlot >= next.rawValue { slots.swapAt(0, activeSlot); activeSlot = 0 }
         layout = next; expandedSessionID = nil
         for index in next.rawValue..<4 { slots[index] = nil }
@@ -47,5 +53,12 @@ struct WorkspaceArrangement {
     mutating func remove(_ id: UUID) {
         for index in slots.indices where slots[index] == id { slots[index] = nil }
         if expandedSessionID == id { expandedSessionID = nil }
+    }
+
+    mutating func clear(_ index: Int) {
+        guard (0..<layout.rawValue).contains(index) else { return }
+        if expandedSessionID == slots[index] { expandedSessionID = nil }
+        slots[index] = nil
+        activeSlot = index
     }
 }

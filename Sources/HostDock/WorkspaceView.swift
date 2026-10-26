@@ -1,19 +1,13 @@
 import AppKit
 import HostDockCore
 import SwiftUI
-import UniformTypeIdentifiers
-
-private struct SessionTabTransfer: Codable, Transferable {
-    let id: UUID
-    static var transferRepresentation: some TransferRepresentation {
-        CodableRepresentation(contentType: UTType(exportedAs: "app.hostdock.session-tab", conformingTo: .data))
-    }
-}
 
 @MainActor
 func focusWorkspaceSession(_ app: AppModel, id: UUID) {
     func focus() -> Bool {
         guard !app.connectionPickerPresented, app.selectedSessionID == id, let session = app.selectedSession, session.connected,
+              app.workspace.slots.prefix(app.workspace.layout.rawValue).contains(id),
+              app.workspace.expandedSessionID == nil || app.workspace.expandedSessionID == id,
               let window = session.terminal.view.window else { return false }
         let files = session.workspaceMode == .files && (app.workspace.layout == .single || app.workspace.expandedSessionID == id)
         window.makeFirstResponder(files ? nil : session.terminal.view)
@@ -154,14 +148,14 @@ private struct ServerSidebar: View {
     }
 
     private func serverRow(_ profile: ConnectionProfile) -> some View {
-        let opened = app.sessions.first { $0.profile.id == profile.id || $0.profile.endpoint == profile.endpoint }
+        let opened = app.sessions.filter { $0.profile.id == profile.id || $0.profile.endpoint == profile.endpoint }
         return Button { open(profile) } label: {
             HStack(spacing: 6) {
                 SidebarLabel(name: profile.name, address: profile.displaySubtitle, symbol: "server.rack")
                 Spacer(minLength: 0)
-                if let opened { Circle().fill(opened.needsAttention ? Color.orange : opened.connected ? Color.green : DockTheme.secondary).frame(width: 5, height: 5) }
+                if !opened.isEmpty { Circle().fill(opened.contains(where: \.needsAttention) ? Color.orange : opened.contains(where: \.connected) ? Color.green : DockTheme.secondary).frame(width: 5, height: 5) }
             }.padding(11).frame(maxWidth: .infinity, alignment: .leading)
-                .background(opened?.id == app.selectedSessionID && opened != nil ? DockTheme.accent.opacity(0.14) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+                .background(opened.contains { $0.id == app.selectedSessionID } ? DockTheme.accent.opacity(0.14) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
         }.buttonStyle(.plain).modifier(DockHoverCursor())
             .contextMenu {
                 Button("打开连接") { open(profile) }
@@ -183,21 +177,11 @@ private struct WorkspaceTabs: View {
                 HStack(spacing: 4) {
                     ForEach(app.sessions) { session in
                         ConnectionTab(app: app, session: session)
-                            .draggable(SessionTabTransfer(id: session.id))
-                            .dropDestination(for: SessionTabTransfer.self) { values, _ in
-                                guard let id = values.first?.id, app.sessions.contains(where: { $0.id == id }) else { return false }
-                                app.moveTab(id, before: session.id); return true
-                            }
                     }
-                    Color.clear.frame(width: 20, height: 36).contentShape(Rectangle())
-                        .dropDestination(for: SessionTabTransfer.self) { values, _ in
-                            guard let id = values.first?.id, app.sessions.contains(where: { $0.id == id }) else { return false }
-                            app.moveTab(id, before: nil); return true
-                        }
                 }.padding(.horizontal, 8)
             }.scrollIndicators(.hidden).frame(maxWidth: .infinity)
             DockTabs(options: WorkspaceLayout.allCases.map { ($0, $0.title) }, selection: Binding(get: { app.workspace.layout }, set: app.setLayout))
-                .frame(width: 186).accessibilityLabel("工作区布局")
+                .frame(width: 186).accessibilityLabel("工作区布局").disabled(app.sessions.isEmpty)
             AutomationBackgroundButton(app: app).padding(.trailing, 12)
         }.frame(height: 60).background(DockTheme.surface)
     }
@@ -206,21 +190,28 @@ private struct WorkspaceTabs: View {
 private struct ConnectionTab: View {
     @ObservedObject var app: AppModel
     @ObservedObject var session: SessionModel
+    private var region: Int? { app.workspace.slots.prefix(app.workspace.layout.rawValue).firstIndex(of: session.id) }
+    private var active: Bool { app.selectedSessionID == session.id }
     var body: some View {
         HStack(spacing: 0) {
-            Button { app.selectedSessionID = session.id; focusWorkspaceSession(app, id: session.id) } label: {
+            Button { app.selectTab(session.id); focusWorkspaceSession(app, id: session.id) } label: {
                 HStack(spacing: 7) {
                     Circle().fill(session.needsAttention ? Color.orange : session.connected ? Color.green : DockTheme.secondary).frame(width: 6, height: 6)
-                    Text(session.profile.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                    Text(app.tabTitle(session)).font(.system(size: 12, weight: .medium)).lineLimit(1)
                         .frame(maxWidth: 170, alignment: .leading)
+                    if let region, app.workspace.layout != .single {
+                        Text("\(region + 1)").font(.system(size: 10, weight: .semibold, design: .rounded))
+                            .frame(width: 18, height: 18).background(DockTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+                            .accessibilityLabel("显示在区域 \(region + 1)")
+                    }
                     if session.transferring { ProgressView(value: session.progress).frame(width: 28) }
                 }.padding(.leading, 12).padding(.trailing, 5).frame(height: 36).contentShape(Rectangle())
             }.buttonStyle(.plain)
             Button { app.requestCloseTab(session) } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)).frame(width: 30, height: 36).contentShape(Rectangle()) }
-                .buttonStyle(.plain).help("关闭会话并断开").accessibilityLabel("关闭“\(session.profile.name)”")
+                .buttonStyle(.plain).help("关闭会话并断开").accessibilityLabel("关闭“\(app.tabTitle(session))”")
         }
-        .background(app.selectedSessionID == session.id ? DockTheme.accent.opacity(0.14) : DockTheme.background, in: RoundedRectangle(cornerRadius: 7))
-        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(app.selectedSessionID == session.id ? DockTheme.accent.opacity(0.45) : DockTheme.border))
+        .background(region != nil ? DockTheme.accent.opacity(0.14) : DockTheme.background, in: RoundedRectangle(cornerRadius: 7))
+        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(active ? DockTheme.accent : region != nil ? DockTheme.accent.opacity(0.35) : DockTheme.border, lineWidth: active ? 2 : 1))
         .help(session.profile.name + "\n" + session.profile.displaySubtitle + "\n" + session.status)
         .contextMenu {
             Button("断开连接，保留标签", action: session.disconnect).disabled(!session.connected || session.disconnecting)
@@ -276,10 +267,6 @@ private struct WorkspaceGrid: View {
     private func cell(_ index: Int) -> some View {
         let session = app.sessions.first { $0.id == app.workspace.slots[index] }
         return WorkspaceCell(app: app, session: session, index: index)
-            .dropDestination(for: SessionTabTransfer.self) { values, _ in
-                guard let id = values.first?.id, app.sessions.contains(where: { $0.id == id }) else { return false }
-                app.placeTab(id, at: index); focusWorkspaceSession(app, id: id); return true
-            }
     }
 }
 
@@ -292,14 +279,14 @@ private struct WorkspaceCell: View {
         VStack(spacing: 0) {
             if let session {
                 if app.workspace.layout != .single {
-                    SplitPaneHeader(app: app, session: session)
+                    SplitPaneHeader(app: app, session: session, index: index)
                     Rectangle().fill(DockTheme.border).frame(height: 1)
                 }
                 SessionPanel(app: app, session: session, compact: app.workspace.layout != .single).id(session.id)
             } else {
                 VStack(spacing: 12) {
                     Image(systemName: "server.rack").font(.system(size: 28, weight: .light)).foregroundStyle(DockTheme.accent)
-                    Text(app.sessions.isEmpty ? "选择服务器，开始工作" : "选择服务器或拖入标签")
+                    Text(app.sessions.isEmpty ? "选择服务器，开始工作" : active ? "点击服务器或标签，填入此区域" : "点击选择此空位")
                         .font(.system(size: 14, weight: .medium))
                     Button("新建连接", action: app.showConnections).buttonStyle(DockButtonStyle())
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -308,9 +295,9 @@ private struct WorkspaceCell: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity).background(DockTheme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 9))
         .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(active && app.workspace.layout != .single ? DockTheme.accent : DockTheme.border, lineWidth: active && app.workspace.layout != .single ? 2 : 1).allowsHitTesting(false))
+        .contentShape(Rectangle())
         .simultaneousGesture(TapGesture().onEnded {
-            app.workspace.focus(index)
-            app.selectedSessionID = session?.id
+            app.focusPane(index)
         })
         .accessibilityElement(children: .contain).accessibilityLabel("区域 \(index + 1)\(active ? "，活动区域" : "")")
     }
@@ -319,20 +306,25 @@ private struct WorkspaceCell: View {
 private struct SplitPaneHeader: View {
     @ObservedObject var app: AppModel
     @ObservedObject var session: SessionModel
+    let index: Int
     var body: some View {
         HStack(spacing: 8) {
             Circle().fill(session.needsAttention ? Color.orange : session.connected ? Color.green : DockTheme.secondary).frame(width: 5, height: 5)
             VStack(alignment: .leading, spacing: 3) {
-                Text(session.profile.name).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                Text(app.tabTitle(session)).font(.system(size: 12, weight: .semibold)).lineLimit(1)
                 Text(session.profile.displaySubtitle).font(.system(size: 10, design: .monospaced)).foregroundStyle(DockTheme.secondary).lineLimit(1)
             }.help(session.profile.name + "\n" + session.profile.displaySubtitle)
             Spacer(minLength: 0)
             Button {
-                app.selectedSessionID = session.id
+                app.focusPane(index)
                 app.workspace.expandedSessionID = session.id
             } label: { Label("文件", systemImage: "folder").font(.system(size: 12)) }
                 .buttonStyle(.plain).padding(8).background(DockTheme.background, in: RoundedRectangle(cornerRadius: 6))
                 .help("放大此区域，打开完整文件工作区").disabled(!session.connected)
+            Button { app.removeFromSplit(index) } label: {
+                Image(systemName: "xmark").font(.system(size: 11, weight: .medium)).frame(width: 32, height: 32).contentShape(Rectangle())
+            }.buttonStyle(.plain).modifier(DockHoverCursor()).help("移出分屏，保留连接")
+                .accessibilityLabel("将“\(app.tabTitle(session))”移出分屏，保留连接")
         }.padding(.horizontal, 12).frame(height: 52)
     }
 }

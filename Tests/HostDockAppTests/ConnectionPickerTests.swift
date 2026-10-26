@@ -53,8 +53,7 @@ import Testing
     #expect(app.selectedSession == nil && app.connectionPickerPresented)
     try await waitUntil { a.connected && !a.connecting }
     #expect(!app.connectionPickerPresented && app.selectedSession === a && app.maximizeRequest == 1)
-    app.showConnections()
-    app.pickerSelection = .saved(a.profile.id)
+    app.showConnection(a)
     #expect(try app.connectFromPicker(profile: a.profile, password: nil, rememberPassword: true) === a)
     #expect(!app.connectionPickerPresented && app.sessions.count == 1 && app.maximizeRequest == 1)
     await app.shutdown()

@@ -139,7 +139,7 @@ private func v7Socket() -> URL {
     let a = try app.connect(profile: fixture.profiles[0], password: "synthetic", rememberPassword: false)
     let b = try app.connect(profile: fixture.profiles[1], password: "synthetic", rememberPassword: false)
     try await waitUntil { a.connected && b.connected && !a.connecting && !b.connecting }
-    app.connectionPickerPresented = false; app.selectedSessionID = a.id
+    app.connectionPickerPresented = false; app.selectTab(a.id)
     let hosting = NSHostingView(rootView: WorkspaceView(app: app))
     let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800), styleMask: [.titled], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false; window.contentView = hosting
@@ -157,9 +157,9 @@ private func v7Socket() -> URL {
     a.workspaceMode = .files
     try await Task.sleep(for: .milliseconds(80)); hosting.layoutSubtreeIfNeeded()
     #expect(remoteScroll() === first && first.contentView.bounds.origin.y >= 490)
-    app.selectedSessionID = b.id
+    app.selectTab(b.id)
     try await Task.sleep(for: .milliseconds(100)); hosting.layoutSubtreeIfNeeded()
-    app.selectedSessionID = a.id
+    app.selectTab(a.id)
     try await Task.sleep(for: .milliseconds(120)); hosting.layoutSubtreeIfNeeded()
     let restored = try #require(remoteScroll())
     #expect(restored.contentView.bounds.origin.y >= 490)
