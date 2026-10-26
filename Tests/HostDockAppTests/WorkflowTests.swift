@@ -169,7 +169,10 @@ private actor PausedCredentialStore: CredentialStore {
     defer { f.clean() }
     let app = f.app(transports: [])
     await app.refreshSavedConnections()
-    #expect(app.savedProfiles.isEmpty && app.pendingProfiles.map(\.id).sorted(by: { $0.uuidString < $1.uuidString }) == f.profiles.map(\.id).sorted(by: { $0.uuidString < $1.uuidString }))
+    let pendingIDs = app.pendingProfiles.map { $0.id.uuidString }.sorted()
+    let expectedIDs = f.profiles.map { $0.id.uuidString }.sorted()
+    #expect(app.savedProfiles.isEmpty)
+    #expect(pendingIDs == expectedIDs)
     var key = f.profiles[0]
     key.authenticationKind = .rsaKey; key.privateKeyPath = "~/.ssh/example"
     #expect(key.credentialAccount != f.profiles[0].credentialAccount)

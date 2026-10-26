@@ -32,6 +32,7 @@ body += f'\n\n版本 {version}，构建 {data["CFBundleVersion"]}。最低构建
 body += '下载 DMG 后将 HostDock 拖入 Applications，或解压 ZIP 后安装。SHA256SUMS.txt 可用于核对两个安装包。\n\n'
 body += '本版本采用本地临时签名，未经 Developer ID 签名及 Apple 公证。确认来源和 SHA-256 后，如系统阻止打开，可在「系统设置 → 隐私与安全性」中选择「仍要打开」。请勿关闭系统安全保护。\n\n'
 body += '标准 SSH exec 可能被部分 JumpServer 网关拒绝或改写，此时返回明确错误，交互终端仍可使用。\n'
+body += '\nHostDock 采用 MIT 许可证，第三方许可原文随 App 分发。This product includes software developed by Niels Provos.\n'
 pathlib.Path(sys.argv[1]).write_text(body)
 PY
 mv "$task_stage/packages" "$task_output"
