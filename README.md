@@ -54,7 +54,7 @@ cd HostDock
 swift scripts/install-app.swift
 ```
 
-生成应用位于 `dist/HostDock.app`，CLI 位于应用内 `Contents/Helpers/hostdock`。版本以 `packaging/Info.plist` 为准，依赖以 `Package.resolved` 锁定。正式打包和后续更新见 [发布维护说明](docs/RELEASING.md)。
+构建仅保留 `dist/HostDock-build.zip`；安装器临时解包并更新 `/Applications/HostDock.app`，用完即清理副本，旧版和上次构建压缩归档。CLI 位于安装应用内 `Contents/Helpers/hostdock`。版本以 `packaging/Info.plist` 为准，依赖以 `Package.resolved` 锁定。正式打包和后续更新见 [发布维护说明](docs/RELEASING.md)。
 
 ## 许可证
 

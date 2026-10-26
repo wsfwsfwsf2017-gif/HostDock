@@ -15,7 +15,11 @@ git push origin main
 swift scripts/install-app.swift
 ```
 
-安装器正常请求旧版退出，等待未保存提示处理；60 秒后仍未退出则停止，不强制结束进程。旧版保存为用户资料目录下的 ZIP，应用替换或注册失败时回滚。连接配置、凭据和草稿不由安装器修改。安装后从 `/Applications/HostDock.app` 启动，确认实际路径、版本和签名；当前不声明文件类型关联。
+构建只输出 `dist/HostDock-build.zip`，上次构建移入 `dist/Backups/*.zip`。构建、安装与包体验证在隐藏的 `.noindex` 临时目录中处理 App，完成或失败后清理，不保留可被系统识别的构建副本。
+
+安装器正常请求旧版退出，等待未保存提示处理；60 秒后仍未退出则停止，不强制结束进程。旧版保存为用户资料目录下的 ZIP，校验完整内容及权限后替换，应用替换或注册失败时回滚。成功后只有 `/Applications/HostDock.app` 保留为应用；连接配置、凭据和草稿不由安装器修改。安装后从此路径启动，确认实际路径、版本、签名和系统注册；当前不声明文件类型关联。
+
+安装器也会将项目 `dist`、`dist/Backups` 和用户 `App Backups` 中遗留的 HostDock `.app`／`.app-backup` 逐一压缩校验、注销后清理。兼容传入可写的候选 App，安装时同样归档清理；只读安装盘请改用 ZIP，避免留下一份解包应用。备份必须是 ZIP，不能仅将 `.app` 改名为 `.app-backup`。
 
 ## 正式发布
 
@@ -42,8 +46,7 @@ git push origin "v$RELEASE_VERSION"
 
 ```sh
 python3 scripts/release.py verify-packages <下载目录> --tag "v$RELEASE_VERSION"
-ditto -x -k <下载目录>/HostDock-$RELEASE_VERSION-arm64.zip <解包目录>
-swift scripts/install-app.swift <解包目录>/HostDock.app
+swift scripts/install-app.swift <下载目录>/HostDock-$RELEASE_VERSION-arm64.zip
 ```
 
 6. 检查安装版实际运行路径、一键连接、SFTP 浏览、终端及临时目录往返校验。记录 Actions、下载校验、安装和功能结果，分别列出未验收项。只有这些步骤完成才报告正式发布完成。
@@ -54,7 +57,7 @@ swift scripts/install-app.swift <解包目录>/HostDock.app
 
 - 自动测试覆盖递归传输、同名冲突、取消恢复、文件操作、编辑冲突、认证保存、配置迁移、会话隔离、路径预约及 CLI。
 - 发布脚本检查版本、构建号、最低系统版本、ARM64、主程序和 CLI 签名、图标、资源清单、14 项依赖许可、DMG 快捷方式、ZIP 路径和 SHA-256，以及两种包中的应用一致性。
-- 容错测试覆盖错误标签、未提交源码、错误标签提交、缺失或变更资源、重复或错误的校验清单和损坏附件。
+- 容错测试覆盖错误标签、未提交源码、错误标签提交、缺失或变更资源、重复或错误的校验清单和损坏附件，以及归档内容／权限／空目录、归档失败保留来源、解包失败清理和非法 ZIP。
 - 实际服务器测试默认关闭；不能将其跳过解释为通过。完整 Xcode 或 CLT 的常规测试由 `scripts/test.sh` 统一启动。`scripts/check-app.sh` 是需要交互输入的可选直连验收工具，不用于 CI。
 - macOS 14 为最低部署目标；CI 的 macOS 15 和当前本机运行检查不代表 macOS 14 实机、其他 Mac 或外接屏已通过。
 

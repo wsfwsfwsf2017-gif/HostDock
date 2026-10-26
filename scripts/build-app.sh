@@ -11,8 +11,10 @@ swift build -c release
 task_bin="$(swift build -c release --show-bin-path)"
 mkdir -p dist
 task_stage="$(mktemp -d "$task_root/dist/.HostDock.XXXXXX")"
-trap 'rm -R -- "$task_stage"' EXIT
+mv "$task_stage" "$task_stage.noindex"
+task_stage="$task_stage.noindex"
 task_app="$task_stage/HostDock.app"
+trap '"/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister" -u "$task_app" >/dev/null 2>&1 || true; rm -R -- "$task_stage"' EXIT
 mkdir -p "$task_app/Contents/MacOS" "$task_app/Contents/Helpers" "$task_app/Contents/Resources" "$task_stage/HostDock.iconset"
 cp "$task_bin/HostDock" "$task_app/Contents/MacOS/HostDock"
 cp "$task_bin/HostDockCLI" "$task_app/Contents/Helpers/hostdock"
@@ -34,13 +36,14 @@ cp THIRD_PARTY_NOTICES.md "$task_app/Contents/Resources/THIRD_PARTY_NOTICES.md"
 python3 scripts/release.py manifest "$task_app"
 codesign --force --deep --sign - "$task_app"
 python3 scripts/release.py verify-app "$task_app"
-if [ -e dist/HostDock.app ]; then
+python3 scripts/release.py archive-app "$task_app" "$task_stage/HostDock-build.zip"
+if [ -e dist/HostDock-build.zip ]; then
     mkdir -p dist/Backups
-    task_backup="dist/Backups/HostDock-$(date +%Y%m%d-%H%M%S)-$(uuidgen).app-backup"
-    mv dist/HostDock.app "$task_backup"
+    task_backup="dist/Backups/HostDock-build-$(date +%Y%m%d-%H%M%S)-$(uuidgen).zip"
+    mv dist/HostDock-build.zip "$task_backup"
 fi
-if ! mv "$task_app" dist/HostDock.app; then
-    if [ -n "${task_backup:-}" ]; then mv "$task_backup" dist/HostDock.app; fi
+if ! mv "$task_stage/HostDock-build.zip" dist/HostDock-build.zip; then
+    if [ -n "${task_backup:-}" ]; then mv "$task_backup" dist/HostDock-build.zip; fi
     exit 1
 fi
-printf '已生成：%s/dist/HostDock.app\n' "$task_root"
+printf '已生成并校验：%s/dist/HostDock-build.zip（不保留构建 App 副本）\n' "$task_root"

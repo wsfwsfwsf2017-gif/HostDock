@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import importlib.util
 import plistlib
+import stat
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -12,6 +14,88 @@ release = importlib.util.module_from_spec(spec); spec.loader.exec_module(release
 
 
 class ReleaseChecks(unittest.TestCase):
+    def fixture_app(self, root, name='HostDock.app'):
+        app = root / name
+        (app / 'Contents/MacOS').mkdir(parents=True)
+        (app / 'Contents/Empty').mkdir()
+        (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': 'app.hostdock.mac'}))
+        binary = app / 'Contents/MacOS/HostDock'
+        binary.write_bytes(b'fixture\x00\xff'); binary.chmod(0o755)
+        (app / 'Contents/中文.txt').write_text('归档内容\n')
+        return app
+
+    def test_archive_round_trip_preserves_files_modes_and_empty_directories(self):
+        with tempfile.TemporaryDirectory(suffix='.noindex') as tmp:
+            root = Path(tmp); app = self.fixture_app(root); archive = root / 'app.zip'
+            release.archive_app(app, archive)
+            self.assertTrue(app.is_dir())
+            self.assertEqual(stat.S_IMODE(archive.stat().st_mode), 0o600)
+            restored = root / 'restored'; release.extract_app(archive, restored)
+            actual = restored / app.name
+            self.assertEqual((actual / 'Contents/中文.txt').read_bytes(), (app / 'Contents/中文.txt').read_bytes())
+            self.assertEqual((actual / 'Contents/MacOS/HostDock').read_bytes(), (app / 'Contents/MacOS/HostDock').read_bytes())
+            self.assertEqual(stat.S_IMODE((actual / 'Contents/MacOS/HostDock').stat().st_mode), 0o755)
+            self.assertTrue((actual / 'Contents/Empty').is_dir())
+            with self.assertRaises(ValueError): release.archive_app(app, archive)
+            with self.assertRaises(ValueError): release.archive_app(app, app / 'inside.zip')
+            with self.assertRaises(ValueError): release.extract_app(archive, restored)
+
+    def test_old_bundle_is_unregistered_and_removed_after_verified_archive(self):
+        with tempfile.TemporaryDirectory(suffix='.noindex') as tmp:
+            root = Path(tmp); app = self.fixture_app(root, 'HostDock-old.app-backup'); archive = root / 'old.zip'
+            actual_run = release.run
+            def run(*args):
+                return '' if str(args[0]).endswith('/lsregister') else actual_run(*args)
+            with patch.object(release, 'run', side_effect=run) as calls:
+                release.archive_app(app, archive, remove_source=True)
+            self.assertFalse(app.exists()); self.assertTrue(archive.is_file())
+            self.assertTrue(any(call.args[1:] == ('-u', app) for call in calls.call_args_list))
+            with zipfile.ZipFile(archive) as z: self.assertIsNone(z.testzip())
+
+    def test_archive_failure_keeps_source_and_does_not_publish_partial_zip(self):
+        with tempfile.TemporaryDirectory(suffix='.noindex') as tmp:
+            root = Path(tmp); app = self.fixture_app(root); archive = root / 'app.zip'
+            with patch.object(release, 'digest', return_value='wrong digest'):
+                with self.assertRaises(ValueError): release.archive_app(app, archive, remove_source=True)
+            self.assertTrue((app / 'Contents/MacOS/HostDock').is_file())
+            self.assertFalse(archive.exists())
+            self.assertFalse(list(root.glob('.archive-*')))
+
+    def test_extract_rejects_links_duplicates_and_path_escape(self):
+        with tempfile.TemporaryDirectory(suffix='.noindex') as tmp:
+            root = Path(tmp); archive = root / 'bad.zip'; destination = root / 'unpacked'
+            for name in ('../escape', '/absolute', 'HostDock.app/../escape', 'HostDock.app/Contents/Info.plist', 'HostDock.app/link'):
+                with zipfile.ZipFile(archive, 'w') as z:
+                    z.writestr('HostDock.app/Contents/Info.plist', b'fixture')
+                    entry = zipfile.ZipInfo(name)
+                    if name.endswith('/link'):
+                        entry.create_system = 3; entry.external_attr = (stat.S_IFLNK | 0o777) << 16
+                    if name == 'HostDock.app/Contents/Info.plist':
+                        with self.assertWarns(UserWarning): z.writestr(entry, b'/outside')
+                    else: z.writestr(entry, b'/outside')
+                with self.assertRaises(ValueError): release.extract_app(archive, destination)
+                self.assertFalse(destination.exists())
+
+    def test_extract_failure_cleans_temporary_app_and_keeps_archive(self):
+        with tempfile.TemporaryDirectory(suffix='.noindex') as tmp:
+            root = Path(tmp); app = self.fixture_app(root); archive = root / 'app.zip'
+            release.archive_app(app, archive)
+            destination = root / 'unpacked'
+            def fail(*args):
+                (destination / 'HostDock.app').mkdir()
+                raise subprocess.CalledProcessError(1, args)
+            with patch.object(release, 'run', side_effect=fail):
+                with self.assertRaises(subprocess.CalledProcessError): release.extract_app(archive, destination)
+            self.assertFalse(destination.exists()); self.assertTrue(archive.is_file())
+
+    def test_unregister_accepts_missing_application_but_preserves_other_errors(self):
+        for status in (-10814, -54):
+            error = subprocess.CalledProcessError(1, ['lsregister'], output=f'failed to scan temporary.app: {status}\n from spotlight\n')
+            with patch.object(release, 'run', side_effect=error):
+                if status == -10814: release.unregister_app(Path('temporary.app'))
+                else:
+                    with self.assertRaises(subprocess.CalledProcessError): release.unregister_app(Path('temporary.app'))
+
     def test_version_and_build_are_validated(self):
         data = release.metadata()
         release.validate_tag('v' + data['CFBundleShortVersionString'], data)

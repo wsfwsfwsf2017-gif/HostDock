@@ -12,7 +12,7 @@
 2. 必要验证 → 中文提交 → 推送 `main` → 更新 `/Applications/HostDock.app`。
 3. 使用 `./scripts/test.sh`、`./scripts/build-app.sh` 和 `swift scripts/install-app.swift`。安装后检查签名、实际启动路径和适用关联。
 4. 更新前正常退出旧 App，保留未保存内容提示；用户取消退出时停止安装。禁止强制结束进程或丢弃数据。
-5. 使用可回滚替换，旧版保留为 ZIP 或非 `.app` 后缀，不让系统将备份识别为应用。不得覆盖用户资料或删除旧凭据。
+5. 使用可回滚替换。构建只保留 `dist/HostDock-build.zip`，旧构建与旧安装版必须压缩为 ZIP；不能仅改名为 `.app-backup`。解包和打包在隐藏 `.noindex` 临时目录完成，成功、失败或取消后清理并注销副本，系统只保留 `/Applications/HostDock.app`。不得覆盖用户资料或删除旧凭据。
 
 ## 正式发布
 

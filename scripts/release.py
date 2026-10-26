@@ -3,8 +3,11 @@
 import argparse
 import hashlib
 import json
+import os
 import plistlib
 import re
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -49,6 +52,79 @@ def digest(path):
         for block in iter(lambda: f.read(1024 * 1024), b''):
             h.update(block)
     return h.hexdigest()
+
+
+def zip_name(entry):
+    # ditto 写入 UTF-8 文件名，但未设置 ZIP 的 UTF-8 标记。
+    return entry.filename if entry.flag_bits & 0x800 else entry.filename.encode('cp437').decode('utf8')
+
+
+def unregister_app(app):
+    try:
+        run('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister', '-u', app)
+    except subprocess.CalledProcessError as error:
+        # 未注册的 .noindex 临时应用返回 kLSApplicationNotFoundErr。
+        if error.returncode != 1 or not re.search(r': -10814(?:\n|$)', error.output or ''):
+            raise
+
+
+def check_zip(archive, root_name='HostDock.app', allow_symlinks=False):
+    with zipfile.ZipFile(archive) as z:
+        require(z.testzip() is None, 'ZIP 校验失败')
+        names = set()
+        for entry in z.infolist():
+            name = zip_name(entry)
+            path = Path(name)
+            require(path.parts and not path.is_absolute() and '..' not in path.parts
+                    and path.parts[0] in (root_name, '__MACOSX'), 'ZIP 包含非法路径')
+            require(name not in names, 'ZIP 包含重复路径')
+            names.add(name)
+            require(allow_symlinks or not stat.S_ISLNK(entry.external_attr >> 16), '安装 ZIP 不应包含符号链接')
+        require(root_name + '/Contents/Info.plist' in names, 'ZIP 缺少应用信息')
+
+
+def archive_app(app, archive, remove_source=False):
+    require(app.is_dir() and not app.is_symlink(), '待归档应用不存在或为符号链接')
+    with (app / 'Contents/Info.plist').open('rb') as f:
+        require(plistlib.load(f).get('CFBundleIdentifier') == 'app.hostdock.mac', '仅允许归档 HostDock 应用')
+    require(not remove_source or app.resolve() != Path('/Applications/HostDock.app'), '不得清理正式安装位置')
+    require(not archive.exists() and not archive.resolve().is_relative_to(app.resolve()), '归档目标已存在或位于应用内')
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.archive-', suffix='.noindex', dir=archive.parent) as temporary:
+        zipped = Path(temporary) / 'app.zip'
+        run('ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', app, zipped)
+        check_zip(zipped, app.name, allow_symlinks=True)
+        with zipfile.ZipFile(zipped) as z:
+            entries = {zip_name(entry): entry for entry in z.infolist()}
+            for path in app.rglob('*'):
+                name = app.name + '/' + path.relative_to(app).as_posix()
+                if path.is_symlink():
+                    require(z.read(entries[name]) == os.fsencode(path.readlink()), '归档链接不一致：' + name)
+                elif path.is_file():
+                    h = hashlib.sha256()
+                    with z.open(entries[name]) as f:
+                        for block in iter(lambda: f.read(1024 * 1024), b''):
+                            h.update(block)
+                    require(h.hexdigest() == digest(path), '归档内容不一致：' + name)
+                    require(stat.S_IMODE(entries[name].external_attr >> 16) == stat.S_IMODE(path.stat().st_mode), '归档权限不一致：' + name)
+                elif path.is_dir():
+                    require(name + '/' in entries, '归档缺少目录：' + name)
+        zipped.chmod(0o600)
+        os.link(zipped, archive)
+    if remove_source:
+        unregister_app(app)
+        shutil.rmtree(app)
+
+
+def extract_app(archive, directory):
+    require(not directory.exists(), '解包目录已存在，拒绝覆盖')
+    check_zip(archive)
+    try:
+        directory.mkdir(mode=0o700, parents=True)
+        run('ditto', '-x', '-k', archive, directory)
+    except Exception:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
 
 
 def resource_hashes(app):
@@ -122,26 +198,28 @@ def verify_packages(folder, data):
     version = data['CFBundleShortVersionString']
     verify_checksums(folder, version)
     name = f'HostDock-{version}-arm64'
-    with zipfile.ZipFile(folder / (name + '.zip')) as z:
-        require(z.testzip() is None, 'ZIP 校验失败')
-        for entry in z.infolist():
-            path = Path(entry.filename)
-            require(not path.is_absolute() and '..' not in path.parts and path.parts[0] in ('HostDock.app', '__MACOSX'), 'ZIP 包含非法路径')
-    with tempfile.TemporaryDirectory(prefix='hostdock-verify-') as temporary:
+    check_zip(folder / (name + '.zip'))
+    with tempfile.TemporaryDirectory(prefix='.hostdock-verify-', suffix='.noindex') as temporary:
         root = Path(temporary)
-        run('ditto', '-x', '-k', folder / (name + '.zip'), root / 'zip')
-        zipped = verify_app(root / 'zip/HostDock.app', data)
-        run('hdiutil', 'verify', folder / (name + '.dmg'))
+        extract_app(folder / (name + '.zip'), root / 'zip')
         mount = root / 'mount'; mount.mkdir()
         attached = False
         try:
+            zipped = verify_app(root / 'zip/HostDock.app', data)
+            run('hdiutil', 'verify', folder / (name + '.dmg'))
             run('hdiutil', 'attach', '-readonly', '-nobrowse', '-noautoopen', '-mountpoint', mount, folder / (name + '.dmg'))
             attached = True
             require((mount / 'Applications').is_symlink() and (mount / 'Applications').readlink() == Path('/Applications'), 'DMG 缺少 Applications 快捷方式')
             require(verify_app(mount / 'HostDock.app', data) == zipped, 'DMG 与 ZIP 中的应用不一致')
         finally:
-            if attached:
-                run('hdiutil', 'detach', mount)
+            try:
+                if attached:
+                    try:
+                        unregister_app(mount / 'HostDock.app')
+                    finally:
+                        run('hdiutil', 'detach', mount)
+            finally:
+                unregister_app(root / 'zip/HostDock.app')
     print(f'安装包、版本 {version}、构建 {data["CFBundleVersion"]}、ARM64、签名、资源、许可及 SHA-256 检查通过')
 
 
@@ -153,13 +231,20 @@ def main():
     for name in ('manifest', 'verify-app', 'verify-packages'):
         command = commands.add_parser(name); command.add_argument('path', type=Path)
         command.add_argument('--tag')
+    archive = commands.add_parser('archive-app')
+    archive.add_argument('path', type=Path); archive.add_argument('archive', type=Path)
+    archive.add_argument('--remove-source', action='store_true')
+    extract = commands.add_parser('extract-app')
+    extract.add_argument('path', type=Path); extract.add_argument('directory', type=Path)
     args = parser.parse_args()
     data = metadata()
-    if args.tag:
+    if getattr(args, 'tag', None):
         validate_tag(args.tag, data, getattr(args, 'require_commit', False))
     if args.command == 'version': print(data['CFBundleShortVersionString'])
     elif args.command == 'manifest': write_manifest(args.path)
     elif args.command == 'verify-app': verify_app(args.path, data); print('App 完整性检查通过')
+    elif args.command == 'archive-app': archive_app(args.path, args.archive, args.remove_source)
+    elif args.command == 'extract-app': extract_app(args.path, args.directory)
     else: verify_packages(args.path, data)
 
 

@@ -9,13 +9,16 @@ task_output="$task_root/dist/releases/$task_version"
 if [ -e "$task_output" ]; then printf '安装包目录已存在，拒绝覆盖：%s\n' "$task_output" >&2; exit 1; fi
 ./scripts/build-app.sh
 task_stage="$(mktemp -d "$task_root/dist/.release.XXXXXX")"
-trap 'rm -rf -- "$task_stage"' EXIT
+mv "$task_stage" "$task_stage.noindex"
+task_stage="$task_stage.noindex"
+trap '"/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister" -u "$task_stage/dmg/HostDock.app" >/dev/null 2>&1 || true; rm -rf -- "$task_stage"' EXIT
 mkdir -p "$task_stage/dmg" "$task_stage/packages" "$task_root/dist/releases"
-ditto dist/HostDock.app "$task_stage/dmg/HostDock.app"
+python3 scripts/release.py extract-app dist/HostDock-build.zip "$task_stage/unpacked"
+mv "$task_stage/unpacked/HostDock.app" "$task_stage/dmg/HostDock.app"
 ln -s /Applications "$task_stage/dmg/Applications"
 task_name="HostDock-$task_version-arm64"
 hdiutil create -volname "HostDock $task_version" -srcfolder "$task_stage/dmg" -format UDZO "$task_stage/packages/$task_name.dmg"
-ditto -c -k --sequesterRsrc --keepParent dist/HostDock.app "$task_stage/packages/$task_name.zip"
+cp dist/HostDock-build.zip "$task_stage/packages/$task_name.zip"
 (
     cd "$task_stage/packages"
     shasum -a 256 "$task_name.dmg" "$task_name.zip" > SHA256SUMS.txt
