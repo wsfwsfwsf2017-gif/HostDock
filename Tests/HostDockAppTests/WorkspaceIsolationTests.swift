@@ -322,9 +322,23 @@ private func backgroundController(_ app: AppModel) async throws -> AutomationCon
         timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
     a.terminal.view.mouseDown(with: click)
     #expect(app.selectedSession === a)
+    app.selectedSessionID = b.id
+    focusWorkspaceSession(app, id: b.id)
+    try await Task.sleep(for: .milliseconds(80)); hosting.layoutSubtreeIfNeeded()
+    try await waitUntil { window.firstResponder === b.terminal.view }
+    #expect(app.workspace.slots[app.workspace.activeSlot] == b.id)
+    #expect(window.makeFirstResponder(a.terminal.view))
+    try await waitUntil { app.selectedSession === a }
     #expect(window.makeFirstResponder(b.terminal.view))
     try await waitUntil { app.selectedSession === b }
     #expect(app.workspace.slots[app.workspace.activeSlot] == b.id)
+    app.selectedSessionID = nil
+    try await Task.sleep(for: .milliseconds(80)); hosting.layoutSubtreeIfNeeded()
+    try await waitUntil { window.firstResponder !== a.terminal.view && window.firstResponder !== b.terminal.view }
+    app.selectedSessionID = b.id
+    focusWorkspaceSession(app, id: b.id)
+    try await Task.sleep(for: .milliseconds(80)); hosting.layoutSubtreeIfNeeded()
+    try await waitUntil { window.firstResponder === b.terminal.view }
     app.selectedSession?.disconnect()
     try await waitUntil { !b.connected && !b.disconnecting }
     #expect(a.connected && !b.connected)

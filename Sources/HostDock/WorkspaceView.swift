@@ -10,6 +10,18 @@ private struct SessionTabTransfer: Codable, Transferable {
     }
 }
 
+@MainActor
+func focusWorkspaceSession(_ app: AppModel, id: UUID) {
+    func focus() -> Bool {
+        guard !app.connectionPickerPresented, app.selectedSessionID == id, let session = app.selectedSession, session.connected,
+              let window = session.terminal.view.window else { return false }
+        let files = session.workspaceMode == .files && (app.workspace.layout == .single || app.workspace.expandedSessionID == id)
+        window.makeFirstResponder(files ? nil : session.terminal.view)
+        return true
+    }
+    if !focus() { DispatchQueue.main.async { _ = focus() } }
+}
+
 struct WorkspaceView: View {
     @ObservedObject var app: AppModel
     let windowReady: Bool
@@ -20,6 +32,9 @@ struct WorkspaceView: View {
     private var visibleIDs: Set<UUID> {
         if let expanded = app.workspace.expandedSessionID { return [expanded] }
         return Set(app.workspace.slots.prefix(app.workspace.layout.rawValue).compactMap { $0 })
+    }
+    private var focusTarget: UUID? {
+        !app.connectionPickerPresented && app.selectedSession?.connected == true ? app.selectedSessionID : nil
     }
 
     var body: some View {
@@ -48,6 +63,19 @@ struct WorkspaceView: View {
         .onChange(of: visibleIDs, initial: true) { _, ids in
             for session in app.sessions { session.setVisible(ids.contains(session.id)) }
         }
+        .onChange(of: focusTarget) { _, id in
+            if let id {
+                let otherFocused = app.sessions.contains { session in
+                    session.id != id && visibleIDs.contains(session.id) && session.terminal.view.window?.firstResponder === session.terminal.view
+                }
+                if !otherFocused { focusWorkspaceSession(app, id: id) }
+            }
+            else if !app.connectionPickerPresented {
+                for session in app.sessions {
+                    if let window = session.terminal.view.window, window.firstResponder === session.terminal.view { window.makeFirstResponder(nil) }
+                }
+            }
+        }
     }
 }
 
@@ -65,7 +93,8 @@ private struct ServerSidebar: View {
         search.isEmpty || "\(profile.name) \(profile.displaySubtitle) \(profile.endpoint.address)".localizedStandardContains(search)
     }
     private func open(_ profile: ConnectionProfile) {
-        do { try app.openProfile(profile) } catch { app.workspaceNotice = error.localizedDescription }
+        do { try app.openProfile(profile); if let id = app.selectedSessionID { focusWorkspaceSession(app, id: id) } }
+        catch { app.workspaceNotice = error.localizedDescription }
     }
 
     var body: some View {
@@ -179,7 +208,7 @@ private struct ConnectionTab: View {
     @ObservedObject var session: SessionModel
     var body: some View {
         HStack(spacing: 0) {
-            Button { app.selectedSessionID = session.id } label: {
+            Button { app.selectedSessionID = session.id; focusWorkspaceSession(app, id: session.id) } label: {
                 HStack(spacing: 7) {
                     Circle().fill(session.needsAttention ? Color.orange : session.connected ? Color.green : DockTheme.secondary).frame(width: 6, height: 6)
                     Text(session.profile.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
@@ -249,7 +278,7 @@ private struct WorkspaceGrid: View {
         return WorkspaceCell(app: app, session: session, index: index)
             .dropDestination(for: SessionTabTransfer.self) { values, _ in
                 guard let id = values.first?.id, app.sessions.contains(where: { $0.id == id }) else { return false }
-                app.placeTab(id, at: index); return true
+                app.placeTab(id, at: index); focusWorkspaceSession(app, id: id); return true
             }
     }
 }

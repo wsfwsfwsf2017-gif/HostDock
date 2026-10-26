@@ -5,6 +5,7 @@ import SwiftUI
 // 原生终端会消费点击，活动区域需跟随 AppKit 焦点与鼠标事件。
 final class SessionTerminalView: TerminalView {
     var onFocus: (() -> Void)?
+    private var focused = false
     override func mouseDown(with event: NSEvent) {
         onFocus?()
         super.mouseDown(with: event)
@@ -17,8 +18,10 @@ final class SessionTerminalView: TerminalView {
     override var hasFocus: Bool {
         get { super.hasFocus }
         set {
+            let becameFocused = newValue && !focused
+            focused = newValue
             super.hasFocus = newValue
-            if newValue {
+            if becameFocused {
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.window?.firstResponder === self else { return }
                     self.onFocus?()
