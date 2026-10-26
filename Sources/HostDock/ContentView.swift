@@ -12,13 +12,13 @@ struct ContentView: View {
                 Circle().fill(app.connected ? Color.green : Color.secondary.opacity(0.5)).frame(width: 6, height: 6)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(app.profile.name).font(.system(size: 14, weight: .semibold)).lineLimit(1)
-                    Text(app.profile.displayAddress).font(.system(size: 11, design: .monospaced))
+                    Text(app.profile.displaySubtitle).font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(DockTheme.secondary).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
-                }.help(app.profile.displayAddress)
+                }.help(app.profile.name + "\n" + app.profile.displayAddress)
                 Spacer()
                 DockTabs(options: WorkspaceMode.allCases.map { ($0, $0.rawValue) }, selection: $app.workspaceMode)
                     .frame(width: 190).accessibilityLabel("工作区模式")
-                TransferButtons(app: app, terminalMode: app.workspaceMode == .terminal)
+                if app.workspaceMode == .files { UploadButton(app: app) }
                 if app.connected {
                     Button("断开", action: app.disconnect).help("断开连接，保留侧栏会话以便重连").disabled(app.disconnecting)
                 }
@@ -62,7 +62,7 @@ private struct WorkspacePanes: View {
                         let next = min(0.85, max(0.15, (dragStart ?? fraction) + value.translation.width / available))
                         if files { app.fileFraction = next } else { app.terminalFraction = next }
                     }.onEnded { _ in dragStart = nil })
-                FileBrowserPane(model: app.remote, remote: true, subtitle: app.profile.displayAddress, serverName: app.profile.name,
+                FileBrowserPane(model: app.remote, remote: true, subtitle: app.profile.displaySubtitle, serverName: app.profile.name,
                                 connect: showConnections, session: app).frame(maxWidth: .infinity)
             }
         }.clipShape(RoundedRectangle(cornerRadius: 10))
@@ -76,33 +76,18 @@ private struct WorkspacePanes: View {
     }
 }
 
-private struct TransferButtons: View {
+private struct UploadButton: View {
     @ObservedObject var app: SessionModel
     @ObservedObject private var local: BrowserModel
     @ObservedObject private var remote: BrowserModel
-    let terminalMode: Bool
-    init(app: SessionModel, terminalMode: Bool = false) { self.app = app; self.local = app.local; self.remote = app.remote; self.terminalMode = terminalMode }
+    init(app: SessionModel) { self.app = app; self.local = app.local; self.remote = app.remote }
 
     var body: some View {
-        if terminalMode {
-            Button("下载…") { Task { await app.downloadSelection() } }
-                .disabled(remote.selection.isEmpty || app.transferring || !remote.directoryReady)
-        } else {
-        HStack(spacing: 8) {
-            transferButton(title: "上传", symbol: "arrow.right", enabled: !local.selection.isEmpty) { app.transfer(upload: true) }
-                .help("上传到服务器当前目录：\(remote.path)")
-            transferButton(title: "下载", symbol: "arrow.left", enabled: !remote.selection.isEmpty) { app.transfer(upload: false) }
-                .help("下载到本机当前目录：\(local.path)")
-        }
-        }
-    }
-
-    private func transferButton(title: String, symbol: String, enabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: symbol).fixedSize()
+        Button { app.transfer(upload: true) } label: {
+            Label("上传", systemImage: "arrow.right").fixedSize()
         }.buttonStyle(DockButtonStyle())
-            .disabled(!app.connected || app.connecting || app.transferring || app.disconnecting || !enabled || !local.directoryReady || !remote.directoryReady)
-            .accessibilityLabel(title)
+            .disabled(!app.connected || app.connecting || app.transferring || app.disconnecting || local.selection.isEmpty || !local.directoryReady || !remote.directoryReady)
+            .help("上传到服务器当前目录：\(remote.path)").accessibilityLabel("上传")
     }
 }
 

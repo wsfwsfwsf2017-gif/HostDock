@@ -12,32 +12,39 @@ struct FileBrowserPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 9) {
-                Image(systemName: remote ? "server.rack" : "laptopcomputer").foregroundStyle(.secondary)
-                Text(remote ? serverName : "本机").fontWeight(.semibold).lineLimit(1)
-                Text(subtitle).font(.system(size: 11)).foregroundStyle(DockTheme.secondary).lineLimit(1).truncationMode(.middle)
-                Spacer(minLength: 0)
-                if model.loading { ProgressView().controlSize(.small) }
-                Menu {
-                    if remote {
-                        Button("主目录") { Task { await model.navigate(to: model.home) } }
-                        Button("SFTP 根目录") { Task { await model.navigate(to: "/") } }
-                    } else {
-                        ForEach(BrowserModel.localShortcuts, id: \.path) { shortcut in
-                            Button(shortcut.name) { Task { await model.navigate(to: shortcut.path) } }
+            GeometryReader { geometry in
+                HStack(spacing: 9) {
+                    Image(systemName: remote ? "server.rack" : "laptopcomputer").foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(remote ? serverName : "本机").fontWeight(.semibold).lineLimit(1).help(remote ? serverName : "本机")
+                        Text(subtitle).font(.system(size: 11)).foregroundStyle(DockTheme.secondary).lineLimit(1).truncationMode(.middle).help(subtitle)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    if model.loading { ProgressView().controlSize(.small) }
+                    Menu {
+                        if remote {
+                            Button("主目录") { Task { await model.navigate(to: model.home) } }
+                            Button("SFTP 根目录") { Task { await model.navigate(to: "/") } }
+                        } else {
+                            ForEach(BrowserModel.localShortcuts, id: \.path) { shortcut in
+                                Button(shortcut.name) { Task { await model.navigate(to: shortcut.path) } }
+                            }
                         }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "folder")
+                            if geometry.size.width >= 400 { Text("快捷目录").font(.system(size: 12)) }
+                        }.padding(.horizontal, 8).frame(height: 36).contentShape(Rectangle())
+                            .background(DockTheme.background, in: RoundedRectangle(cornerRadius: 6))
                     }
-                } label: { Image(systemName: "star").frame(width: 32, height: 32).contentShape(Rectangle()) }
-                    .menuStyle(.borderlessButton).frame(width: 32, height: 32).padding(.leading, 8).modifier(DockHoverCursor())
-                    .accessibilityLabel(remote ? "远端快捷目录" : "本机快捷目录")
-                if !remote {
-                    Button(action: model.chooseLocalDirectory) { Image(systemName: "folder.badge.gearshape") }
-                        .buttonStyle(DockButtonStyle())
-                        .help("选择本机目录").accessibilityLabel("选择本机目录")
-                }
-            }
-            .font(.system(size: 13)).padding(.horizontal, 16).frame(height: 48)
-            .background(DockTheme.surface)
+                    .menuStyle(.borderlessButton).fixedSize().frame(height: 36).modifier(DockHoverCursor())
+                    .help("快捷目录").accessibilityLabel(remote ? "远端快捷目录" : "本机快捷目录")
+                    if !remote {
+                        Button(action: model.chooseLocalDirectory) { Image(systemName: "folder.badge.gearshape") }
+                            .buttonStyle(DockButtonStyle())
+                            .help("选择本机目录").accessibilityLabel("选择本机目录")
+                    }
+                }.font(.system(size: 13)).padding(.horizontal, 16).frame(height: 48)
+            }.frame(height: 48).background(DockTheme.surface)
             Divider()
             HStack(spacing: 8) {
                 Button { Task { await model.navigate(to: FilePath.parent(model.path)) } } label: {

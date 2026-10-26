@@ -24,6 +24,14 @@ struct JumpServerAccessProfile: Identifiable, Codable, Hashable, Sendable {
     }
     var displayName: String { name.isEmpty ? host : name }
 
+    func updatingAddress(_ input: String) throws -> Self {
+        let parsed = try JumpServerAddress(input)
+        var result = self
+        if host.isEmpty || (try? JumpServerAddress(portalURL ?? host).host) == host { result.host = parsed.host }
+        result.portalURL = parsed.portalURL
+        return result
+    }
+
     func validated() throws -> Self {
         var result = self
         let endpoint = try ConnectionEndpoint(host: host, port: port, username: username).validated()

@@ -72,9 +72,7 @@ struct TerminalPane: View {
                 if app.connected && !app.terminalRunning {
                     Button("打开终端", action: app.startTerminal)
                 }
-                Button { app.workspaceMode = .files } label: { Image(systemName: "folder") }
-                    .help("切换文件传输，保留终端会话").accessibilityLabel("切换文件传输")
-            }.buttonStyle(DockButtonStyle()).font(.system(size: 12)).padding(.horizontal, 14).frame(height: 38)
+            }.buttonStyle(DockButtonStyle()).font(.system(size: 12)).padding(.horizontal, 14).frame(height: 48)
                 .background(DockTheme.surface)
             Divider()
             TerminalSurface(controller: app.terminal).padding(.horizontal, 8).padding(.top, 5)

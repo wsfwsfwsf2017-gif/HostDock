@@ -71,7 +71,7 @@ struct JumpServerAddress {
         } else {
             guard !value.isEmpty, !value.contains(where: { $0.isWhitespace || $0 == "/" || $0 == "@" || $0 == "\0" }),
                   !value.contains(":") || IPv6Address(value) != nil else {
-                throw HostDockError("请输入堡垒机登录网址、IP 或域名，SSH 端口请在高级设置中填写。")
+                throw HostDockError("请输入堡垒机登录网址、IP 或域名，勿在 IP 或域名后附加 SSH 端口。")
             }
             host = value.lowercased(); portalURL = nil
         }
@@ -95,6 +95,12 @@ struct ConnectionProfile: Identifiable, Codable, Hashable, Sendable {
     var targetHost: String { connectionMode == .jumpServer ? jumpServer?.targetHost ?? endpoint.host : endpoint.host }
     var targetUsername: String { connectionMode == .jumpServer ? jumpServer?.targetUsername ?? endpoint.username : endpoint.username }
     var displayAddress: String { "\(targetHost) · \(targetUsername)" }
+    var displaySubtitle: String {
+        guard !targetHost.isEmpty else { return displayAddress }
+        let boundary = targetHost.contains(":") ? #"\p{L}\p{N}_.:\-"# : #"\p{L}\p{N}_.\-"#
+        let pattern = "(?<![\(boundary)])\(NSRegularExpression.escapedPattern(for: targetHost))(?![\(boundary)])"
+        return name.range(of: pattern, options: [.regularExpression, .caseInsensitive]) == nil ? displayAddress : targetUsername
+    }
 
     var credentialAccount: String {
         let hash = SHA256.hash(data: Data(endpoint.identity.utf8)).map { String(format: "%02x", $0) }.joined()

@@ -81,12 +81,9 @@ struct JumpServerAccessEditor: View {
     let startNew: (() -> Void)?
     @ViewState private var access: JumpServerAccessProfile
     @ViewState private var address: String
-    @ViewState private var gateway: String
-    @ViewState private var port: String
     @ViewState private var secret = ""
     @ViewState private var encrypted = false
     @ViewState private var needsUnlock = false
-    @ViewState private var details = false
     @ViewState private var selectedAssetID: UUID?
     @ViewState private var operation: Task<Void, Never>?
     @ViewState private var error: String?
@@ -102,8 +99,6 @@ struct JumpServerAccessEditor: View {
         original = app.catalog.accessProfiles.first { $0.id == access.id }
         _access = ViewState(initialValue: access)
         _address = ViewState(initialValue: access.portalURL ?? access.host)
-        _gateway = ViewState(initialValue: (try? JumpServerAddress(access.portalURL ?? access.host).host) == access.host ? "" : access.host)
-        _port = ViewState(initialValue: String(access.port))
         _selectedAssetID = ViewState(initialValue: app.catalog.profiles.first { $0.jumpServer?.accessProfileID == access.id }?.id)
     }
     var body: some View {
@@ -142,22 +137,11 @@ struct JumpServerAccessEditor: View {
                             if !needsUnlock { Button("重新输入口令…") { needsUnlock = true }.buttonStyle(DockButtonStyle()) }
                         }.font(.system(size: 12))
                     }
-                    DisclosureGroup("连接详情", isExpanded: $details) {
-                        VStack(alignment: .leading, spacing: 14) {
-                            DockFormField(title: "SSH 网关") { TextField("默认从堡垒机地址提取", text: $gateway).accessibilityLabel("SSH 网关") }
-                            DockFormField(title: "SSH 端口") { TextField("2222", text: $port).accessibilityLabel("SSH 端口") }
-                            if !access.privateKeyPath.isEmpty { Text("密钥位置：" + access.privateKeyPath).font(.system(size: 11, design: .monospaced)).textSelection(.enabled) }
-                        }.padding(.top, 14)
-                    }.font(.system(size: 12)).foregroundStyle(DockTheme.secondary)
                     if assets.count > 1 {
                         Picker("验证目标", selection: $selectedAssetID) {
-                            ForEach(assets) { profile in Text(profile.name + " · " + profile.displayAddress).tag(Optional(profile.id)) }
+                            ForEach(assets) { profile in Text(profile.name + " · " + profile.displaySubtitle).tag(Optional(profile.id)) }
                         }.frame(minHeight: 36)
-                    } else if let target = assets.first {
-                        Text("验证目标：\(target.name) · \(target.displayAddress)").font(.system(size: 12)).foregroundStyle(DockTheme.secondary)
                     }
-                    if original != nil { Text("关联服务器下次连接使用更新后的配置，当前会话继续运行。")
-                        .font(.system(size: 12)).foregroundStyle(DockTheme.secondary) }
                     if let keyError { DockNotice(text: keyError) }
                     if let error { DockNotice(text: error) }
                     }.disabled(busy)
@@ -191,7 +175,7 @@ struct JumpServerAccessEditor: View {
                     }
                 }
             } message: { Text("删除接入信息及保存的口令，本机私钥文件继续保留。") }
-            .task(id: [access.privateKeyPath, address, gateway, port, access.username].joined(separator: "\0")) {
+            .task(id: [access.privateKeyPath, address, access.username].joined(separator: "\0")) {
                 secret = ""; keyError = nil; encrypted = false; needsUnlock = false
                 guard !access.privateKeyPath.isEmpty else { return }
                 let path = access.privateKeyPath
@@ -200,9 +184,7 @@ struct JumpServerAccessEditor: View {
                     try Task.checkCancellation()
                     guard access.privateKeyPath == path else { return }
                     encrypted = info.requiresPassphrase; access.keyRequiresPassphrase = info.requiresPassphrase
-                    var candidate = access
-                    if let parsed = try? JumpServerAddress(address) { candidate.host = gateway.isEmpty ? parsed.host : gateway }
-                    candidate.port = Int(port) ?? access.port
+                    let candidate = (try? access.updatingAddress(address)) ?? access
                     if info.requiresPassphrase { needsUnlock = !(await app.hasSavedPassphrase(profile: asset, access: candidate)) }
                 } catch is CancellationError {} catch { keyError = error.localizedDescription }
             }
@@ -211,10 +193,7 @@ struct JumpServerAccessEditor: View {
     private func submit() {
         error = nil
         do {
-            let parsed = try JumpServerAddress(address)
-            guard let number = Int(port) else { throw HostDockError("请输入有效的 SSH 端口。") }
-            var candidate = access
-            candidate.host = gateway.isEmpty ? parsed.host : gateway; candidate.port = number; candidate.portalURL = parsed.portalURL
+            var candidate = try access.updatingAddress(address)
             candidate.keyRequiresPassphrase = encrypted
             candidate = try candidate.validated()
             let changed = original.map { $0.authenticationIdentity != candidate.authenticationIdentity || $0.rememberPassphrase != candidate.rememberPassphrase || $0.keyRequiresPassphrase != candidate.keyRequiresPassphrase } ?? true

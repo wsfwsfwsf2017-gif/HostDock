@@ -52,11 +52,11 @@ private struct CurrentServerSidebar: View {
                 HostDockMark().frame(width: 25, height: 25).foregroundStyle(DockTheme.accent)
                 Text("HostDock").font(.system(size: 16, weight: .semibold))
                 Spacer()
+                Button(action: app.showConnections) {
+                    Image(systemName: "plus").frame(width: 16, height: 16)
+                }.buttonStyle(DockButtonStyle()).help("新建连接（⌘K）").accessibilityLabel("新建连接")
+                    .disabled(app.pickerCancelling || app.shuttingDown)
             }.padding(.horizontal, 18).frame(height: 66)
-            Button(action: app.showConnections) {
-                Label("新建", systemImage: "plus").frame(maxWidth: .infinity)
-            }.buttonStyle(DockButtonStyle()).help("新建连接（⌘K）")
-                .padding(.horizontal, 14).padding(.bottom, 20).disabled(app.pickerCancelling || app.shuttingDown)
             HStack { Text("当前会话"); Spacer(); Text("\(app.sessions.count)").monospacedDigit() }
                 .font(.system(size: 11, weight: .medium)).foregroundStyle(DockTheme.secondary).padding(.horizontal, 20).padding(.bottom, 12)
             ScrollView {
@@ -136,13 +136,13 @@ struct ConnectionPickerView: View {
                             LazyVStack(spacing: 4) {
                                 if app.pickerSelection.tab == .saved {
                                     ForEach(app.savedProfiles.filter { matches($0.name, $0.endpoint) }) { profile in
-                                        recordButton(name: profile.name, address: profile.displayAddress, selection: .saved(profile.id), symbol: "server.rack")
+                                        recordButton(name: profile.name, address: profile.displaySubtitle, selection: .saved(profile.id), symbol: "server.rack")
                                     }
                                     if app.savedProfiles.isEmpty { Text("还没有完成验证的服务器").font(.caption).foregroundStyle(DockTheme.secondary).padding(20) }
                                     else if !app.savedProfiles.contains(where: { matches($0.name, $0.endpoint) }) { Text("没有匹配的服务器").font(.caption).foregroundStyle(DockTheme.secondary).padding(20) }
                                 } else {
                                     ForEach(catalog.recent.filter { matches($0.name, $0.endpoint) }) { recent in
-                                        recordButton(name: recent.name, address: recent.draft().displayAddress, selection: .recent(recent.id), symbol: "clock")
+                                        recordButton(name: recent.name, address: recent.draft().displaySubtitle, selection: .recent(recent.id), symbol: "clock")
                                     }
                                     if catalog.recent.isEmpty { Text("暂无成功连接记录").font(.caption).foregroundStyle(DockTheme.secondary).padding(20) }
                                     else if !catalog.recent.contains(where: { matches($0.name, $0.endpoint) }) { Text("没有匹配的服务器").font(.caption).foregroundStyle(DockTheme.secondary).padding(20) }
@@ -168,14 +168,13 @@ struct ConnectionPickerView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }.frame(maxHeight: .infinity)
-            Rectangle().fill(DockTheme.border).frame(height: 1)
-            HStack {
-                if app.pickerSelection.tab == .recent && !catalog.recent.isEmpty {
+            if app.pickerSelection.tab == .recent && !catalog.recent.isEmpty {
+                Rectangle().fill(DockTheme.border).frame(height: 1)
+                HStack {
                     Button("清空历史") { clearingHistory = true }.buttonStyle(.plain).disabled(app.pickerBusy || catalog.loadError != nil)
-                }
-                Spacer()
-                Text("关闭弹窗会取消尚未完成的连接").font(.system(size: 11)).foregroundStyle(DockTheme.secondary)
-            }.padding(.horizontal, 24).frame(height: 38)
+                    Spacer()
+                }.padding(.horizontal, 24).frame(height: 38)
+            }
         }
         .frame(width: 920, height: 700)
         .background(DockTheme.surface).foregroundStyle(DockTheme.text).tint(DockTheme.accent)
@@ -246,7 +245,7 @@ private struct SidebarLabel: View {
                 Text(name).font(.system(size: 13, weight: .medium)).lineLimit(1)
                 Text(address).font(.system(size: 10, design: .monospaced)).foregroundStyle(DockTheme.secondary).lineLimit(1).truncationMode(.middle)
             }
-        }.contentShape(Rectangle())
+        }.contentShape(Rectangle()).help(name + "\n" + address)
     }
 }
 
@@ -259,7 +258,7 @@ private struct SessionRow: View {
         HStack(alignment: .top, spacing: 12) {
             Button(action: select) {
                 VStack(alignment: .leading, spacing: 8) {
-                    SidebarLabel(name: session.profile.name, address: session.profile.displayAddress, symbol: "server.rack")
+                    SidebarLabel(name: session.profile.name, address: session.profile.displaySubtitle, symbol: "server.rack")
                     HStack(spacing: 6) {
                         Circle().fill(session.needsAttention ? Color.orange : session.connected ? Color.green : DockTheme.secondary).frame(width: 5, height: 5)
                         Text(session.status).font(.system(size: 10))
@@ -290,8 +289,8 @@ private struct SessionPanel: View {
         } else {
             VStack(spacing: 18) {
                 Image(systemName: "server.rack").font(.system(size: 36, weight: .light)).foregroundStyle(DockTheme.accent)
-                Text(session.profile.name).font(.system(size: 24, weight: .semibold))
-                Text(session.profile.displayAddress).font(.system(size: 12, design: .monospaced)).foregroundStyle(DockTheme.secondary)
+                Text(session.profile.name).font(.system(size: 24, weight: .semibold)).lineLimit(1).help(session.profile.name)
+                Text(session.profile.displaySubtitle).font(.system(size: 12, design: .monospaced)).foregroundStyle(DockTheme.secondary)
                 if session.busy { ProgressView().controlSize(.small) }
                 Text(session.connectionError ?? session.status).font(.system(size: 13)).foregroundStyle(DockTheme.secondary).textSelection(.enabled)
                 Button("重新连接") { app.showConnection(session) }.buttonStyle(DockButtonStyle(prominent: true))
@@ -402,7 +401,7 @@ private struct ConnectionForm: View {
     @ViewState private var remoteDirectory: String
     @ViewState private var password = ""
     @ViewState private var access: JumpServerAccessProfile?
-    @ViewState private var directoriesExpanded = false
+    @ViewState private var directoriesExpanded = true
     @ViewState private var remember: Bool
     @ViewState private var changingAuthentication: Bool
     @ViewState private var error: String?
@@ -429,18 +428,9 @@ private struct ConnectionForm: View {
                 if !isNew {
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(profile.name).font(.system(size: 24, weight: .semibold)).lineLimit(1)
-                            Text(profile.displayAddress).font(.system(size: 12, design: .monospaced))
+                            Text(profile.name).font(.system(size: 24, weight: .semibold)).lineLimit(1).help(profile.name)
+                            Text(profile.displaySubtitle).font(.system(size: 12, design: .monospaced))
                                 .foregroundStyle(DockTheme.secondary).lineLimit(2).textSelection(.enabled)
-                            DisclosureGroup("连接详情") {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text(profile.connectionMode.title)
-                                    Text(profile.endpoint.address).textSelection(.enabled)
-                                    if let url = profile.jumpServer?.portalURL, let destination = URL(string: url) {
-                                        Link("打开堡垒机网页 ↗", destination: destination)
-                                    }
-                                }.font(.system(size: 11)).padding(.top, 5)
-                            }.font(.system(size: 11)).foregroundStyle(DockTheme.secondary)
                         }
                         Spacer()
                         if let edit, app.catalog.profiles.contains(where: { $0.id == profile.id }) {
@@ -513,8 +503,6 @@ private struct ConnectionForm: View {
                             Spacer()
                         }
                     }
-                    Text("验证成功并保存认证后，可从已保存直接连接。目录留空进入用户主目录。")
-                        .font(.system(size: 11)).foregroundStyle(DockTheme.secondary)
                 }.padding(.horizontal, 28).padding(.vertical, 14).frame(maxWidth: 660, alignment: .leading).frame(maxWidth: .infinity)
                     .background(DockTheme.surface).overlay(alignment: .top) { Rectangle().fill(DockTheme.border).frame(height: 1) }
             }
@@ -595,7 +583,7 @@ private struct ProfileEditor: View {
     @ViewState private var draft: ConnectionFormDraft
     @ViewState private var secret = ""
     @ViewState private var access: JumpServerAccessProfile?
-    @ViewState private var directoriesExpanded = false
+    @ViewState private var directoriesExpanded = true
     @ViewState private var localDirectory: String
     @ViewState private var remoteDirectory: String
     @ViewState private var error: String?

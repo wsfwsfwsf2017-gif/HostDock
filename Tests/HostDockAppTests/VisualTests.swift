@@ -53,6 +53,11 @@ func renderWorkspaceInBothAppearances() async throws {
         try await renderView(WorkspaceView(app: app), name: "v08-workspace-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 1440, height: 900))
         b.workspaceMode = .files
         try await renderView(WorkspaceView(app: app), name: "v08-workspace-files-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 1440, height: 900), emphasizedSelection: true)
+        let labels = ConnectionProfile(name: "开发环境 · 192.0.2.123", endpoint: ConnectionEndpoint(host: "192.0.2.123", port: 22, username: "tester"))
+        try await renderView(FileBrowserPane(model: b.remote, remote: true, subtitle: labels.displaySubtitle, serverName: labels.name, session: b),
+            name: "build14-file-header-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 500, height: 600))
+        try await renderView(FileBrowserPane(model: b.remote, remote: true, subtitle: labels.displaySubtitle, serverName: "用于检查省略、快捷入口与边缘留白的很长服务器名称 · 192.0.2.123", session: b),
+            name: "build14-file-header-compact-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 320, height: 600))
         b.workspaceMode = .terminal
         try await renderView(FilePropertiesView(entry: FileEntry(path: "/home/demo/example.txt", kind: .file, size: 1234, modified: Date(), permissions: 0o644, owner: 1000, group: 1000)), name: "v08-properties-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 500, height: 360))
         app.selectPickerTab(.recent)
