@@ -1,0 +1,86 @@
+name: 正式发布
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: ${{ !github.event.deleted }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - name: 获取源码和标签
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: 检查版本、提交、系统和实际架构
+        id: metadata
+        run: |
+          test "$(uname -m)" = arm64
+          test "$RUNNER_ARCH" = ARM64
+          sw_vers
+          swift --version
+          task_version=$(python3 scripts/release.py version --tag "$RELEASE_TAG" --require-commit)
+          echo "version=$task_version" >> "$GITHUB_OUTPUT"
+      - name: 运行功能和发布检查测试
+        run: ./scripts/test.sh
+      - name: 构建并验证 DMG、ZIP
+        run: ./scripts/package-release.sh "$RELEASE_TAG"
+      - name: 保存已验证附件
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: verified-release
+          path: dist/releases/${{ steps.metadata.outputs.version }}/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: 取回已验证附件
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: verified-release
+          path: release
+      - name: 拒绝覆盖、上传草稿并检查附件后公开
+        run: |
+          set -euo pipefail
+          task_existing=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq '.[].tag_name')
+          if grep -Fxq -- "$RELEASE_TAG" <<< "$task_existing"; then
+            echo "已有同名 Release，拒绝覆盖：$RELEASE_TAG" >&2
+            exit 1
+          fi
+          task_version="${RELEASE_TAG#v}"
+          cd release
+          sha256sum -c SHA256SUMS.txt
+          gh release create "$RELEASE_TAG" \
+            "HostDock-$task_version-arm64.dmg" \
+            "HostDock-$task_version-arm64.zip" SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
+            --title "HostDock $task_version" --notes-file release-notes.md
+          mkdir downloaded
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir downloaded
+          cmp SHA256SUMS.txt downloaded/SHA256SUMS.txt
+          (cd downloaded && sha256sum -c SHA256SUMS.txt)
+          test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets | length')" = 3
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

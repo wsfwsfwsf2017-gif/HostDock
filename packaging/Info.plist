@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key><string>app.hostdock.mac</string>
+    <key>CFBundleName</key><string>HostDock</string>
+    <key>CFBundleDisplayName</key><string>HostDock</string>
+    <key>CFBundleExecutable</key><string>HostDock</string>
+    <key>CFBundleIconFile</key><string>HostDock.icns</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleDevelopmentRegion</key><string>zh-Hans</string>
+    <key>CFBundleLocalizations</key><array><string>zh-Hans</string></array>
+    <key>CFBundleShortVersionString</key><string>1.0.0</string>
+    <key>CFBundleVersion</key><string>11</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+    <key>NSDesktopFolderUsageDescription</key><string>用于浏览和传输您在桌面上选择的文件。</string>
+    <key>NSDocumentsFolderUsageDescription</key><string>用于浏览和传输您在文稿中选择的文件。</string>
+    <key>NSDownloadsFolderUsageDescription</key><string>用于浏览和传输您在下载目录中选择的文件。</string>
+</dict>
+</plist>
