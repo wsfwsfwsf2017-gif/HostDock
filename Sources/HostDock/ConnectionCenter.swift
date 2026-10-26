@@ -2,223 +2,55 @@ import AppKit
 import HostDockCore
 import SwiftUI
 
-struct WorkspaceView: View {
-    @ObservedObject var app: AppModel
-    let windowReady: Bool
-    @ObservedObject private var catalog: ConnectionCatalog
-    @ViewState private var closing: SessionModel?
-
-    init(app: AppModel, windowReady: Bool = true) { self.app = app; self.windowReady = windowReady; catalog = app.catalog }
-
-    var body: some View {
-        HStack(spacing: 0) {
-            CurrentServerSidebar(app: app, close: requestClose).frame(minWidth: 200, idealWidth: 230, maxWidth: 260)
-            Rectangle().fill(DockTheme.border).frame(width: 1)
-            VStack(spacing: 0) {
-                if let error = catalog.loadError { DockNotice(text: error).padding(12) }
-                if let session = app.selectedSession {
-                    SessionPanel(app: app, session: session).id(session.id)
-                } else {
-                    ContentUnavailableView {
-                        Label("打开服务器，开始工作", systemImage: "server.rack")
-                    } description: { Text("文件、终端和传输会保留在各自的会话中。") }
-                    actions: { Button("新建连接", action: app.showConnections).buttonStyle(DockButtonStyle(prominent: true)).disabled(app.pickerCancelling || app.shuttingDown) }
-                }
-            }.frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .background(DockTheme.background).foregroundStyle(DockTheme.text).tint(DockTheme.accent)
-        .sheet(isPresented: Binding(get: { windowReady && app.connectionPickerPresented },
-                                   set: { app.connectionPickerPresented = $0 })) { ConnectionPickerView(app: app) }
-        .confirmationDialog("关闭会话并取消该会话的传输？已完成的项目保留。", isPresented: Binding(get: { closing != nil }, set: { if !$0 { closing = nil } })) {
-            if let session = closing {
-                Button("关闭“\(session.profile.name)”", role: .destructive) { Task { await app.closeSession(session); closing = nil } }
-            }
-        }
-    }
-
-    private func requestClose(_ session: SessionModel) {
-        if session.transferring { closing = session }
-        else { Task { await app.closeSession(session) } }
-    }
-}
-
-private struct CurrentServerSidebar: View {
-    @ObservedObject var app: AppModel
-    let close: (SessionModel) -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                HostDockMark().frame(width: 25, height: 25).foregroundStyle(DockTheme.accent)
-                Text("HostDock").font(.system(size: 16, weight: .semibold))
-                Spacer()
-                Button(action: app.showConnections) {
-                    Image(systemName: "plus").frame(width: 16, height: 16)
-                }.buttonStyle(DockButtonStyle()).help("新建连接（⌘K）").accessibilityLabel("新建连接")
-                    .disabled(app.pickerCancelling || app.shuttingDown)
-            }.padding(.horizontal, 18).frame(height: 66)
-            HStack { Text("当前会话"); Spacer(); Text("\(app.sessions.count)").monospacedDigit() }
-                .font(.system(size: 11, weight: .medium)).foregroundStyle(DockTheme.secondary).padding(.horizontal, 20).padding(.bottom, 12)
-            ScrollView {
-                LazyVStack(spacing: 5) {
-                    ForEach(app.sessions) { session in
-                        SessionRow(session: session, selected: app.selectedSessionID == session.id,
-                                   select: { app.selectedSessionID = session.id }, close: { close(session) })
-                    }
-                    if app.sessions.isEmpty {
-                        Text("尚未打开服务器").font(.system(size: 12)).foregroundStyle(DockTheme.secondary).padding(.top, 16)
-                    }
-                }.padding(.horizontal, 10)
-            }
-            Text("SSH / SFTP").font(.system(size: 10, design: .monospaced)).foregroundStyle(DockTheme.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading).padding(18)
-        }.disabled(app.shuttingDown)
-    }
-}
-
 struct ConnectionPickerView: View {
     @ObservedObject var app: AppModel
-    @ObservedObject private var catalog: ConnectionCatalog
-    @ViewState private var search = ""
-    @ViewState private var editing: ConnectionProfile?
-    @ViewState private var deleting: ConnectionProfile?
-    @ViewState private var clearingHistory = false
     @ViewState private var showingJumpHelp = false
+    @ViewState private var deleting: ConnectionProfile?
     @ViewState private var notice: String?
-
-    init(app: AppModel) { self.app = app; catalog = app.catalog }
-
-    private func matches(_ name: String, _ endpoint: ConnectionEndpoint) -> Bool {
-        search.isEmpty || "\(name) \(endpoint.address)".localizedStandardContains(search)
-    }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 HostDockMark().frame(width: 25, height: 25).foregroundStyle(DockTheme.accent)
-                Text("连接服务器").font(.system(size: 18, weight: .semibold))
+                Text(app.pickerEditing ? "编辑服务器" : app.pickerSelection.tab == .new ? "新建连接" : "连接服务器")
+                    .font(.system(size: 18, weight: .semibold))
                 Spacer()
                 Button("关闭") {
                     if showingJumpHelp { showingJumpHelp = false }
                     else { app.connectionPickerPresented = false }
-                }
-                    .keyboardShortcut(.cancelAction).buttonStyle(DockButtonStyle()).disabled(app.updatingRecords)
+                }.keyboardShortcut(.cancelAction).buttonStyle(DockButtonStyle()).disabled(app.updatingRecords)
             }.padding(.horizontal, 24).frame(height: 68)
-            DockTabs(options: [(ConnectionPickerTab.saved, "连接服务器"), (.new, "新建连接")],
-                     selection: Binding(get: { app.pickerSelection.tab == .new ? .new : .saved }, set: { app.selectPickerTab($0) }))
-                .frame(width: 330).padding(.bottom, 16).disabled(app.pickerBusy || editing != nil)
             Rectangle().fill(DockTheme.border).frame(height: 1)
-            if let error = catalog.loadError { DockNotice(text: error).padding(12) }
+            if let error = app.catalog.loadError { DockNotice(text: error).padding(12) }
             if let notice { DockNotice(text: notice).padding(12) }
-            if app.pickerSelection.tab == .new && !app.pendingProfiles.isEmpty {
-                HStack {
-                    Menu("待完善连接（\(app.pendingProfiles.count)）") {
-                        ForEach(app.pendingProfiles) { profile in
-                            Button(profile.name) { app.useDraft(profile) }
-                        }
-                    }.fixedSize()
-                    Text("补齐认证并验证成功后，将出现在已保存中。")
-                        .font(.caption).foregroundStyle(DockTheme.secondary)
-                    Spacer()
-                }.padding(.horizontal, 24).padding(.bottom, 10)
-            }
-            HStack(spacing: 0) {
-                if app.pickerSelection.tab != .new {
-                    VStack(spacing: 0) {
-                        DockTabs(options: [(ConnectionPickerTab.saved, "已保存"), (.recent, "最近连接")],
-                                 selection: Binding(get: { app.pickerSelection.tab }, set: { app.selectPickerTab($0) }))
-                            .padding(.horizontal, 12).padding(.top, 12).accessibilityLabel("保存和历史分类")
-                        HStack(spacing: 8) {
-                            Image(systemName: "magnifyingglass").foregroundStyle(DockTheme.secondary)
-                            TextField("搜索名称、地址、用户名", text: $search).textFieldStyle(.plain).accessibilityLabel("搜索保存和近期服务器")
-                        }.font(.system(size: 12)).padding(12).background(DockTheme.surface, in: RoundedRectangle(cornerRadius: 8)).padding(12)
-                        ScrollView {
-                            LazyVStack(spacing: 4) {
-                                if app.pickerSelection.tab == .saved {
-                                    ForEach(app.savedProfiles.filter { matches($0.name, $0.endpoint) }) { profile in
-                                        recordButton(name: profile.name, address: profile.displaySubtitle, selection: .saved(profile.id), symbol: "server.rack")
-                                    }
-                                    if app.savedProfiles.isEmpty { Text("还没有完成验证的服务器").font(.caption).foregroundStyle(DockTheme.secondary).padding(20) }
-                                    else if !app.savedProfiles.contains(where: { matches($0.name, $0.endpoint) }) { Text("没有匹配的服务器").font(.caption).foregroundStyle(DockTheme.secondary).padding(20) }
-                                } else {
-                                    ForEach(catalog.recent.filter { matches($0.name, $0.endpoint) }) { recent in
-                                        recordButton(name: recent.name, address: recent.draft().displaySubtitle, selection: .recent(recent.id), symbol: "clock")
-                                    }
-                                    if catalog.recent.isEmpty { Text("暂无成功连接记录").font(.caption).foregroundStyle(DockTheme.secondary).padding(20) }
-                                    else if !catalog.recent.contains(where: { matches($0.name, $0.endpoint) }) { Text("没有匹配的服务器").font(.caption).foregroundStyle(DockTheme.secondary).padding(20) }
-                                }
-                            }.padding(.horizontal, 10).padding(.bottom, 12)
-                        }
-                    }.frame(width: 250).background(DockTheme.background).disabled(app.pickerBusy || editing != nil)
-                    Rectangle().fill(DockTheme.border).frame(width: 1)
-                }
-                if let profile = editing {
+            if let profile = app.pickerProfile {
+                if app.pickerEditing {
                     ScrollView {
                         ProfileEditor(app: app, profile: profile, showingHelp: $showingJumpHelp,
-                                      saved: { app.pickerSelection = .saved(profile.id); editing = nil },
-                                      cancel: { editing = nil }).padding(.vertical, 8)
-                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if let profile = app.pickerProfile {
-                    ConnectionForm(app: app, profile: profile, session: app.pickerSession, showingHelp: $showingJumpHelp,
-                                   edit: { editing = profile }, remove: { deleting = profile }).id(profile)
+                                      saved: { app.connectionPickerPresented = false },
+                                      cancel: { app.pickerEditing = false }).padding(.vertical, 8)
+                    }
                 } else {
-                    ContentUnavailableView {
-                        Label(app.pickerSelection.tab == .saved ? "选择已保存的服务器" : "选择近期连接", systemImage: "server.rack")
-                    } actions: { Button("新建连接") { app.selectPickerTab(.new) }.buttonStyle(DockButtonStyle()) }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ConnectionForm(app: app, profile: profile, session: app.pickerSession, showingHelp: $showingJumpHelp,
+                                   edit: { app.pickerEditing = true }, remove: { deleting = profile }).id(profile)
                 }
-            }.frame(maxHeight: .infinity)
-            if app.pickerSelection.tab == .recent && !catalog.recent.isEmpty {
-                Rectangle().fill(DockTheme.border).frame(height: 1)
-                HStack {
-                    Button("清空历史") { clearingHistory = true }.buttonStyle(.plain).disabled(app.pickerBusy || catalog.loadError != nil)
-                    Spacer()
-                }.padding(.horizontal, 24).frame(height: 38)
             }
         }
-        .frame(width: 920, height: 700)
+        .frame(width: 780, height: 670)
         .background(DockTheme.surface).foregroundStyle(DockTheme.text).tint(DockTheme.accent)
         .background(ConnectionPickerWindow())
         .interactiveDismissDisabled(app.updatingRecords)
-        .onChange(of: app.pickerSelection.tab) { _, _ in search = ""; editing = nil; notice = nil }
-        .onChange(of: search) { _, _ in
-            if let profile = app.pickerProfile, matches(profile.name, profile.endpoint) { return }
-            if app.pickerSelection.tab == .saved { app.pickerSelection = .saved(app.savedProfiles.first(where: { matches($0.name, $0.endpoint) })?.id) }
-            if app.pickerSelection.tab == .recent { app.pickerSelection = .recent(catalog.recent.first(where: { matches($0.name, $0.endpoint) })?.id) }
-        }
-        .confirmationDialog("删除服务器记录及已保存的密码？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+        .confirmationDialog("删除服务器记录及已保存的认证？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
             if let profile = deleting {
                 Button("删除“\(profile.name)”", role: .destructive) {
                     Task {
-                        do { try await app.removeProfile(profile) } catch { notice = error.localizedDescription }
+                        do { try await app.removeProfile(profile); app.connectionPickerPresented = false }
+                        catch { notice = error.localizedDescription }
                         deleting = nil
                     }
                 }
             }
         }
-        .confirmationDialog("清空最近连接？已保存服务器和密码将保留。", isPresented: $clearingHistory) {
-            Button("清空历史", role: .destructive) {
-                do { try catalog.clearHistory(); app.selectPickerTab(.recent) } catch { notice = error.localizedDescription }
-            }
-        }
-    }
-
-    private func recordButton(name: String, address: String, selection: ConnectionPickerSelection, symbol: String) -> some View {
-        Button { app.pickerSelection = selection; notice = nil } label: {
-            SidebarLabel(name: name, address: address, symbol: symbol)
-                .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                .background(app.pickerSelection == selection ? DockTheme.accent.opacity(0.14) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
-        }.buttonStyle(.plain)
-            .simultaneousGesture(TapGesture(count: 2).onEnded { connect(selection) })
-            .onKeyPress(.return) { connect(selection); return .handled }
-    }
-
-    private func connect(_ selection: ConnectionPickerSelection) {
-        guard !app.pickerBusy else { return }
-        app.pickerSelection = selection
-        guard let profile = app.pickerProfile else { return }
-        do { try app.connectFromPicker(profile: profile, password: nil, rememberPassword: true) }
-        catch { notice = error.localizedDescription }
     }
 }
 
@@ -234,7 +66,7 @@ private struct ConnectionPickerWindow: NSViewRepresentable {
     }
 }
 
-private struct SidebarLabel: View {
+struct SidebarLabel: View {
     let name: String
     let address: String
     let symbol: String
@@ -249,53 +81,39 @@ private struct SidebarLabel: View {
     }
 }
 
-private struct SessionRow: View {
-    @ObservedObject var session: SessionModel
-    let selected: Bool
-    let select: () -> Void
-    let close: () -> Void
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Button(action: select) {
-                VStack(alignment: .leading, spacing: 8) {
-                    SidebarLabel(name: session.profile.name, address: session.profile.displaySubtitle, symbol: "server.rack")
-                    HStack(spacing: 6) {
-                        Circle().fill(session.needsAttention ? Color.orange : session.connected ? Color.green : DockTheme.secondary).frame(width: 5, height: 5)
-                        Text(session.status).font(.system(size: 10))
-                        if session.automationRequests > 0 { Text("AI 操作中").font(.system(size: 10)).foregroundStyle(DockTheme.accent) }
-                        if session.transferring && !session.waitingForTarget { Text("\(Int(session.progress * 100))%").font(.system(size: 10, design: .monospaced)) }
-                    }.foregroundStyle(DockTheme.secondary)
-                    if session.transferring { ProgressView(value: session.progress).controlSize(.mini) }
-                }.frame(maxWidth: .infinity, alignment: .leading)
-            }.buttonStyle(.plain)
-            Menu {
-                Button("断开连接，保留会话", action: session.disconnect).disabled(!session.connected || session.disconnecting)
-                Button("关闭会话并断开", action: close)
-            } label: { Image(systemName: "ellipsis").frame(width: 32, height: 32).contentShape(Rectangle()) }
-                .menuStyle(.borderlessButton).frame(width: 32, height: 32).accessibilityLabel("会话操作").modifier(DockHoverCursor())
-        }.padding(12).background(selected ? DockTheme.accent.opacity(0.14) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
-            .help(session.profile.name + " · " + session.profile.displayAddress)
-            .accessibilityElement(children: .contain)
-    }
-}
-
-private struct SessionPanel: View {
+struct SessionPanel: View {
     @ObservedObject var app: AppModel
     @ObservedObject var session: SessionModel
+    var compact = false
     var body: some View {
         if session.connected {
-            ContentView(app: session, showConnections: app.showConnections).id(session.id)
-                .onAppear { session.setVisible(true) }.onDisappear { session.setVisible(false) }
+            if compact {
+                VStack(spacing: 0) {
+                    if let conflict = session.conflictRequest { FileConflictCard(app: session, conflict: conflict) }
+                    TerminalPane(app: session, showHeader: false)
+                    if session.transferring { HStack {
+                        Text(session.transferLabel).lineLimit(1)
+                        ProgressView(value: session.progress).frame(width: 70)
+                        Button("取消", action: session.cancelTransfer)
+                    }.font(.caption).padding(8) }
+                }
+            } else { ContentView(app: session, showConnections: { app.showConnection(session) }).id(session.id) }
         } else {
-            VStack(spacing: 18) {
-                Image(systemName: "server.rack").font(.system(size: 36, weight: .light)).foregroundStyle(DockTheme.accent)
-                Text(session.profile.name).font(.system(size: 24, weight: .semibold)).lineLimit(1).help(session.profile.name)
-                Text(session.profile.displaySubtitle).font(.system(size: 12, design: .monospaced)).foregroundStyle(DockTheme.secondary)
-                if session.busy { ProgressView().controlSize(.small) }
-                Text(session.connectionError ?? session.status).font(.system(size: 13)).foregroundStyle(DockTheme.secondary).textSelection(.enabled)
-                Button("重新连接") { app.showConnection(session) }.buttonStyle(DockButtonStyle(prominent: true))
-                    .disabled(session.busy || app.pickerCancelling || app.shuttingDown)
-            }.padding(40).frame(maxWidth: .infinity, maxHeight: .infinity)
+            ScrollView {
+                VStack(spacing: 18) {
+                    Image(systemName: "server.rack").font(.system(size: 32, weight: .light)).foregroundStyle(DockTheme.accent)
+                    Text(session.profile.name).font(.system(size: 20, weight: .semibold)).lineLimit(1).help(session.profile.name)
+                    Text(session.profile.displaySubtitle).font(.system(size: 12, design: .monospaced)).foregroundStyle(DockTheme.secondary)
+                    if let request = session.hostTrustRequest { HostTrustCard(request: request, trust: session.trustHost) }
+                    else {
+                        if session.busy { ProgressView().controlSize(.small) }
+                        Text(session.connectionError ?? session.status).font(.system(size: 13)).foregroundStyle(DockTheme.secondary).textSelection(.enabled)
+                        if session.connecting { Button("取消连接", action: session.cancelConnection).buttonStyle(DockButtonStyle()) }
+                        else { Button("重新连接") { app.showConnection(session) }.buttonStyle(DockButtonStyle(prominent: true))
+                            .disabled(session.busy || app.pickerCancelling || app.shuttingDown) }
+                    }
+                }.padding(28).frame(maxWidth: .infinity)
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }
@@ -414,7 +232,7 @@ private struct ConnectionForm: View {
         _localDirectory = ViewState(initialValue: profile.localStartDirectory ?? "")
         _remoteDirectory = ViewState(initialValue: profile.remoteStartDirectory ?? "")
         _remember = ViewState(initialValue: profile.rememberPassword)
-        _changingAuthentication = ViewState(initialValue: profile.lastValidatedAt == nil)
+        _changingAuthentication = ViewState(initialValue: app.pickerAuthenticating || !app.readyProfileIDs.contains(profile.id))
         _access = ViewState(initialValue: app.newAccessProfile?.id == profile.jumpServer?.accessProfileID ? app.newAccessProfile : app.catalog.accessProfiles.first { $0.id == profile.jumpServer?.accessProfileID })
     }
     private var isNew: Bool { app.pickerSelection.tab == .new }

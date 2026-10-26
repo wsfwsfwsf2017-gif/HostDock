@@ -160,3 +160,50 @@ private func renderView<V: View>(_ view: V, name: String, dark: Bool, size: NSSi
     #expect(png.count > 10_000)
     window.close()
 }
+
+@MainActor
+@Test(.enabled(if: ProcessInfo.processInfo.environment["HOSTDOCK_RENDER_CHECK"] == "1"))
+func renderTabbedSplitWorkspaceAndBackgroundPanel() async throws {
+    let fixture = try SessionFixture(); defer { fixture.clean() }
+    let connections = (0..<5).map { _ in FakeSessionConnection(home: fixture.remote(0)) }
+        + [FakeSessionConnection(home: fixture.remote(0), requiresTrust: true)]
+    let app = fixture.app(transports: connections, storage: MemoryConnectionStorage())
+    for index in 0..<5 {
+        var profile = fixture.profiles[0]
+        profile.id = UUID(); profile.endpoint.host = "192.0.2.\(index + 10)"
+        profile.name = index == 0 ? "开发环境" : index == 4 ? "用于检查标签省略和提示的长服务器别称" : "应用服务器 \(index + 1)"
+        _ = try app.connect(profile: profile, password: "synthetic-only", rememberPassword: true)
+    }
+    try await waitUntil { app.sessions.allSatisfy(\.terminalReady) }
+    await app.refreshSavedConnections()
+    for index in 0..<5 { await connections[index].emit("tester@demo-\(index + 1):~$ pwd\r\n/home/tester\r\ntester@demo-\(index + 1):~$ ") }
+    for dark in [false, true] {
+        app.setLayout(.single)
+        try await renderView(WorkspaceView(app: app), name: "build17-single-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 1440, height: 900))
+        app.setLayout(.dual)
+        try await renderView(WorkspaceView(app: app), name: "build17-dual-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 1440, height: 900))
+        app.setLayout(.quad)
+        try await renderView(WorkspaceView(app: app), name: "build17-quad-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 1440, height: 900))
+        try await renderView(WorkspaceView(app: app), name: "build17-quad-compact-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 1000, height: 620))
+        app.workspace.expandedSessionID = app.selectedSessionID
+        try await renderView(WorkspaceView(app: app), name: "build17-expanded-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 1440, height: 900))
+        app.workspace.expandedSessionID = nil
+        app.showConnections()
+        try await renderView(ConnectionPickerView(app: app), name: "build17-new-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 780, height: 670))
+        app.connectionPickerPresented = false
+    }
+    let suite = "HostDock-visual17-" + UUID().uuidString
+    let preferences = try #require(UserDefaults(suiteName: suite))
+    let socket = FileManager.default.temporaryDirectory.appendingPathComponent("hdv-" + UUID().uuidString.prefix(8)).appendingPathComponent("control.sock")
+    defer { preferences.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: socket.deletingLastPathComponent()) }
+    let controller = AutomationController(app: app, defaults: preferences, socketURL: socket)
+    await controller.setEnabled(true)
+    #expect(controller.enabled)
+    let background = try app.connectBackground(profile: app.sessions[0].profile)
+    try await waitUntil { background.hostTrustRequest != nil }
+    for dark in [false, true] {
+        try await renderView(AutomationBackgroundView(app: app, controller: controller), name: "build17-background-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 460, height: 500))
+        try await renderView(AutomationSettingsView(controller: controller), name: "build17-settings-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 560, height: 190))
+    }
+    await controller.setEnabled(false); await app.shutdown()
+}

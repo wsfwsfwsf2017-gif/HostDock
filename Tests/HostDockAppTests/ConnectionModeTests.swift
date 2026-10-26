@@ -106,6 +106,7 @@ private func jumpProfile() -> ConnectionProfile {
     let app = AppModel(catalog: ConnectionCatalog(storage: MemoryConnectionStorage()), credentials: MemoryCredentialStore(), makeConnection: { transport })
     var profile = jumpProfile()
     profile.localStartDirectory = fixture.profiles[0].localStartDirectory
+    app.showConnections()
     let session = try app.connectFromPicker(profile: profile, password: "synthetic", rememberPassword: false)
     try await waitUntil { session.connected && !session.connecting }
     #expect(await transport.endpoints == [try profile.validated().endpoint])
@@ -114,12 +115,14 @@ private func jumpProfile() -> ConnectionProfile {
     app.showConnections()
     var equivalent = profile
     equivalent.id = UUID(); equivalent.endpoint.username = "different-stale-value"
+    app.showConnections()
     let reused = try app.connectFromPicker(profile: equivalent, password: nil, rememberPassword: false)
     #expect(reused === session && app.sessions.count == 1 && app.maximizeRequest == request)
     #expect(await transport.connects == 1)
     await session.shutdown()
     app.showConnection(session)
     // 同一已断开会话仍按最终组合用户名定位，取消不会误删旧会话。
+    app.showConnections()
     let reconnect = try app.connectFromPicker(profile: equivalent, password: "synthetic", rememberPassword: false)
     #expect(reconnect === session)
     app.connectionPickerPresented = false
@@ -141,6 +144,7 @@ private func jumpProfile() -> ConnectionProfile {
         makeConnection: { FakeSessionConnection(home: fixture.remote(0), failure: .authentication) })
     var edited = original
     edited.jumpServer?.targetHost = "192.0.2.124"
+    app.showConnections()
     let session = try app.connectFromPicker(profile: edited, password: "synthetic-new", rememberPassword: true)
     try await waitUntil { !session.connecting }
     #expect(!session.connected && app.connectionPickerPresented)

@@ -85,116 +85,6 @@ private func v7Socket() -> URL {
 }
 
 @MainActor
-@Test func automationIsOptInAndTargetsSessionsRatherThanSelection() async throws {
-    let fixture = try SessionFixture(); defer { fixture.clean() }
-    let first = FakeSessionConnection(home: fixture.remote(0)), second = FakeSessionConnection(home: fixture.remote(1))
-    let app = fixture.app(transports: [first, second])
-    let a = try app.connect(profile: fixture.profiles[0], password: "synthetic", rememberPassword: false)
-    let b = try app.connect(profile: fixture.profiles[1], password: "synthetic", rememberPassword: false)
-    try await waitUntil { a.terminalReady && b.terminalReady }
-    let suite = "HostDock-v7-test-" + UUID().uuidString
-    let defaults = try #require(UserDefaults(suiteName: suite)); defer { defaults.removePersistentDomain(forName: suite) }
-    let socket = v7Socket(); defer { try? FileManager.default.removeItem(at: socket.deletingLastPathComponent()) }
-    let controller = AutomationController(app: app, defaults: defaults, socketURL: socket)
-    #expect(await controller.handle(ControlRequest(command: "sessions.list")).error?.code == "DISABLED")
-    await controller.setEnabled(true)
-    #expect(controller.enabled && defaults.bool(forKey: "HostDock.AutomationEnabled"))
-    await first.configureExecution(result: SSHCommandResult(stdout: Data("中文结果".utf8), stderr: Data("failure-details".utf8), exitCode: 17))
-    app.selectedSessionID = b.id
-    let maximize = app.maximizeRequest
-    let locate = await controller.handle(ControlRequest(command: "connect", arguments: ["profile": a.profile.id.uuidString]))
-    #expect(locate.ok && app.selectedSessionID == a.id && app.sessions.count == 2 && app.maximizeRequest == maximize)
-    app.selectedSessionID = b.id
-    let exec = await controller.handle(ControlRequest(command: "exec", arguments: ["session": a.id.uuidString, "command": "synthetic-command"]))
-    #expect(exec.ok && exec.result == .object(["stdout": .string("中文结果"), "stderr": .string("failure-details"), "stdoutEncoding": .string("utf8"), "stderrEncoding": .string("utf8"), "exitCode": .number(17)]))
-    #expect(await first.commands == ["synthetic-command"])
-    #expect(await second.commands.isEmpty)
-    let send = await controller.handle(ControlRequest(command: "terminal.send", arguments: ["session": a.id.uuidString, "text": "echo 测试", "enter": "true"]))
-    #expect(send.ok)
-    #expect(await first.inputs.last == Data("echo 测试\r".utf8))
-    #expect(await second.inputs.isEmpty)
-    let malformed = await controller.handle(ControlRequest(command: "exec", arguments: ["session": "bad", "command": "ignored"]))
-    #expect(malformed.error?.code == "INVALID_ARGUMENT")
-    await controller.setEnabled(false)
-    #expect(a.connected && b.connected && !controller.enabled)
-    #expect(await controller.handle(ControlRequest(command: "sessions.list")).error?.code == "DISABLED")
-    await app.shutdown()
-}
-
-@MainActor
-@Test func automationCancellationAndDisableLeaveOtherWorkAndConnectionsRunning() async throws {
-    let fixture = try SessionFixture(); defer { fixture.clean() }
-    let gate = TestGate()
-    let first = FakeSessionConnection(home: fixture.remote(0)), second = FakeSessionConnection(home: fixture.remote(1))
-    await first.configureExecution(gate: gate)
-    let app = fixture.app(transports: [first, second])
-    let a = try app.connect(profile: fixture.profiles[0], password: "synthetic", rememberPassword: false)
-    let b = try app.connect(profile: fixture.profiles[1], password: "synthetic", rememberPassword: false)
-    try await waitUntil { a.connected && b.connected && !a.connecting && !b.connecting }
-    let suite = "HostDock-v7-test-" + UUID().uuidString
-    let defaults = try #require(UserDefaults(suiteName: suite)); defer { defaults.removePersistentDomain(forName: suite) }
-    let socket = v7Socket(); defer { try? FileManager.default.removeItem(at: socket.deletingLastPathComponent()) }
-    let controller = AutomationController(app: app, defaults: defaults, socketURL: socket)
-    await controller.setEnabled(true)
-    let request = ControlRequest(command: "exec", arguments: ["session": a.id.uuidString, "command": "wait"])
-    let pending = Task { await controller.handle(request) }
-    try await waitUntil { a.automationRequests == 1 }
-    let other = await controller.handle(ControlRequest(command: "exec", arguments: ["session": b.id.uuidString, "command": "finish"]))
-    #expect(other.ok)
-    #expect(await controller.handle(ControlRequest(command: "exec", arguments: request.arguments)).error?.code == "BUSY")
-    let cancel = await controller.handle(ControlRequest(command: "cancel", arguments: ["request": request.id.uuidString]))
-    let cancelled = await pending.value
-    #expect(cancel.ok && cancelled.error?.code == "CANCELLED")
-    #expect(a.connected && b.connected && a.automationRequests == 0)
-    let pendingAgain = Task { await controller.handle(ControlRequest(command: "exec", arguments: request.arguments)) }
-    try await waitUntil { a.automationRequests == 1 }
-    await controller.setEnabled(false)
-    #expect((await pendingAgain.value).error?.code == "CANCELLED")
-    #expect(a.connected && b.connected)
-    await app.shutdown()
-}
-
-@MainActor
-@Test func automationTransfersCaptureTargetsAndCancelWithoutRemovingSources() async throws {
-    let fixture = try SessionFixture(); defer { fixture.clean() }
-    let gate = TestGate()
-    let first = FakeSessionConnection(home: fixture.remote(0), store: GatedFileStore(gate: gate))
-    let second = FakeSessionConnection(home: fixture.remote(1))
-    let app = fixture.app(transports: [first, second])
-    let a = try app.connect(profile: fixture.profiles[0], password: "synthetic", rememberPassword: false)
-    let b = try app.connect(profile: fixture.profiles[1], password: "synthetic", rememberPassword: false)
-    try await waitUntil { a.connected && b.connected && !a.connecting && !b.connecting }
-    let suite = "HostDock-v7-test-" + UUID().uuidString
-    let defaults = try #require(UserDefaults(suiteName: suite)); defer { defaults.removePersistentDomain(forName: suite) }
-    let socket = v7Socket(); defer { try? FileManager.default.removeItem(at: socket.deletingLastPathComponent()) }
-    let controller = AutomationController(app: app, defaults: defaults, socketURL: socket)
-    await controller.setEnabled(true)
-    let source = fixture.root.appendingPathComponent("source-中文.txt")
-    let bytes = Data(repeating: 0x41, count: 128 * 1024)
-    try bytes.write(to: source)
-    let request = ControlRequest(command: "files.upload", arguments: ["session": a.id.uuidString, "destination": fixture.remote(0)], paths: [source.path])
-    let pending = Task { await controller.handle(request) }
-    try await waitUntil { a.transferring }
-    for _ in 0..<400 { if await gate.entered { break }; try await Task.sleep(for: .milliseconds(5)) }
-    #expect(await gate.entered)
-    app.selectedSessionID = b.id
-    let cancellation = await controller.handle(ControlRequest(command: "cancel", arguments: ["request": request.id.uuidString]))
-    let cancelled = await pending.value
-    #expect(cancellation.ok && cancelled.error?.code == "CANCELLED")
-    #expect(try Data(contentsOf: source) == bytes)
-    #expect(!FileManager.default.fileExists(atPath: fixture.remote(0) + "/" + source.lastPathComponent))
-    #expect(try !FileManager.default.contentsOfDirectory(atPath: fixture.remote(0)).contains { $0.contains(".part") })
-    #expect(a.connected && b.connected && app.selectedSessionID == b.id)
-    await gate.open()
-    let done = await controller.handle(ControlRequest(command: "files.upload", arguments: request.arguments, paths: request.paths))
-    #expect(done.ok)
-    #expect(try Data(contentsOf: URL(fileURLWithPath: fixture.remote(0)).appendingPathComponent(source.lastPathComponent)) == bytes)
-    #expect(!FileManager.default.fileExists(atPath: fixture.remote(1) + "/" + source.lastPathComponent))
-    await controller.setEnabled(false)
-    await app.shutdown()
-}
-
-@MainActor
 @Test func automationPreferenceRestoresOnlyAfterExplicitEnable() async throws {
     let fixture = try SessionFixture(); defer { fixture.clean() }
     let app = fixture.app(transports: [])
@@ -231,10 +121,10 @@ private func v7Socket() -> URL {
     await controller.setEnabled(true)
     let response = await controller.handle(ControlRequest(command: "connect", arguments: ["profile": profile.id.uuidString]))
     #expect(!response.ok && response.error?.code == "NEEDS_USER_ACTION")
-    #expect(app.sessions.first?.hostTrustRequest != nil && app.sessions.first?.connected == false)
-    #expect(app.connectionPickerPresented && app.catalog.profiles == [profile])
+    #expect(app.backgroundSessions.first?.hostTrustRequest != nil && app.backgroundSessions.first?.connected == false)
+    #expect(!app.connectionPickerPresented && app.sessions.isEmpty && app.catalog.profiles == [profile])
     await controller.setEnabled(false)
-    #expect(app.sessions.isEmpty)
+    #expect(app.backgroundSessions.isEmpty)
     #expect(try await credentials.read(account: profile.credentialAccount) == "synthetic-credential")
     await app.shutdown()
 }

@@ -9,6 +9,7 @@ import Testing
     let fixture = try SessionFixture()
     defer { fixture.clean() }
     let app = fixture.app(transports: [])
+    app.showConnections()
     let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 650),
                           styleMask: [.titled], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
@@ -22,11 +23,13 @@ import Testing
 }
 
 @MainActor
-@Test func pickerStartsAutomaticallyAndKeepsWorkspaceSelectionIndependent() throws {
+@Test func startupKeepsMainPageAndNewFormKeepsWorkspaceSelectionIndependent() throws {
     let fixture = try SessionFixture()
     defer { fixture.clean() }
     let app = fixture.app(transports: [])
-    #expect(app.connectionPickerPresented && app.pickerSelection.tab == .saved)
+    #expect(!app.connectionPickerPresented && app.pickerSelection.tab == .new)
+    app.showConnections()
+    #expect(app.connectionPickerPresented && app.pickerSelection == .new)
     #expect(app.sessions.isEmpty && app.selectedSession == nil)
     let selected = UUID()
     app.selectedSessionID = selected
@@ -35,7 +38,7 @@ import Testing
         #expect(app.pickerSelection.tab == tab && app.selectedSessionID == selected)
     }
     let empty = AppModel(catalog: ConnectionCatalog(storage: MemoryConnectionStorage()), credentials: MemoryCredentialStore())
-    #expect(empty.connectionPickerPresented && empty.pickerSelection.tab == .new)
+    #expect(!empty.connectionPickerPresented && empty.pickerSelection.tab == .new)
     #expect(empty.newProfile.rememberPassword)
 }
 
@@ -44,6 +47,7 @@ import Testing
     let fixture = try SessionFixture()
     defer { fixture.clean() }
     let app = fixture.app(transports: [FakeSessionConnection(home: fixture.remote(0))])
+    app.showConnections()
     app.pickerSelection = .saved(fixture.profiles[0].id)
     let a = try app.connectFromPicker(profile: fixture.profiles[0], password: "synthetic", rememberPassword: false)
     #expect(app.selectedSession == nil && app.connectionPickerPresented)
@@ -144,6 +148,7 @@ import Testing
     let fixture = try SessionFixture()
     defer { fixture.clean() }
     let app = fixture.app(transports: [FakeSessionConnection(home: fixture.remote(0))])
+    app.showConnections()
     app.pickerSelection = .saved(fixture.profiles[0].id)
     let a = try app.connectFromPicker(profile: fixture.profiles[0], password: nil, rememberPassword: true)
     try await waitUntil { a.passwordRequired }
@@ -154,6 +159,7 @@ import Testing
     let storage = MemoryConnectionStorage()
     storage.rejectsWrites = true
     let failed = fixture.app(transports: [FakeSessionConnection(home: fixture.remote(0))], storage: storage)
+    failed.showConnections()
     let temporary = try failed.connectFromPicker(profile: fixture.profiles[0], password: "synthetic", rememberPassword: true)
     try await waitUntil { temporary.connected && !temporary.connecting }
     #expect(temporary.credentialNotice != nil && failed.catalog.profiles.isEmpty && failed.catalog.recent.isEmpty)

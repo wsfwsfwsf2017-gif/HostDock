@@ -18,9 +18,12 @@ enum WorkspaceMode: String, CaseIterable {
     case terminal = "终端", files = "文件传输"
 }
 
+enum SessionOrigin { case interactive, automation }
+
 @MainActor
 final class SessionModel: ObservableObject, Identifiable {
     let id = UUID()
+    let origin: SessionOrigin
     @Published private(set) var profile: ConnectionProfile
     var onConnected: ((UUID) -> Void)?
     let local = BrowserModel()
@@ -73,7 +76,6 @@ final class SessionModel: ObservableObject, Identifiable {
 
     var busy: Bool { connecting || disconnecting || transferring }
     var connectionGeneration: UUID { session }
-    var connectionAttemptID: UUID { attempt }
     var verifiedRemoteIdentity: String { profile.endpoint.identity + ":" + (acceptedFingerprint ?? "") }
     var needsAttention: Bool { hostTrustRequest != nil || conflictRequest != nil || passwordRequired || connectionError != nil }
     var status: String {
@@ -89,7 +91,10 @@ final class SessionModel: ObservableObject, Identifiable {
     }
 
     init(profile: ConnectionProfile, catalog: ConnectionCatalog, credentials: any CredentialStore,
-         connection: any SessionConnection = LiveSessionConnection(), reservations: TransferReservations = TransferReservations()) {
+         connection: any SessionConnection = LiveSessionConnection(), reservations: TransferReservations = TransferReservations(),
+         origin: SessionOrigin = .interactive) {
+        self.origin = origin
+        self.visible = origin == .interactive
         self.profile = profile
         self.catalog = catalog
         self.credentials = credentials
@@ -147,10 +152,10 @@ final class SessionModel: ObservableObject, Identifiable {
                 await remote.attach(store: result.store, home: result.home, initialDirectory: profile.remoteStartDirectory)
                 guard attempt == token, !Task.isCancelled else { return }
                 do {
-                    if rememberPassword || validationOnly {
+                    if origin == .interactive && (rememberPassword || validationOnly) {
                         self.profile = try await persistAuthentication(profile: profile, access: access, secret: secret,
                             reusedAccount: reusedAccount, token: token, validationOnly: validationOnly)
-                    } else if var old = catalog.profiles.first(where: { $0.id == profile.id && $0.credentialAccount == profile.credentialAccount }) {
+                    } else if origin == .interactive, var old = catalog.profiles.first(where: { $0.id == profile.id && $0.credentialAccount == profile.credentialAccount }) {
                         try await credentials.remove(account: old.credentialAccount)
                         old.lastValidatedAt = nil; old.rememberPassword = false
                         try catalog.save(old)
@@ -162,7 +167,7 @@ final class SessionModel: ObservableObject, Identifiable {
                         credentialNotice = "已连接，但认证保存未完成，此连接暂不能一键重连。\n\(error.localizedDescription)"
                     }
                 }
-                if !validationOnly {
+                if !validationOnly && origin == .interactive {
                     var recentProfile = self.profile
                     if let id = recentProfile.jumpServer?.accessProfileID, !catalog.accessProfiles.contains(where: { $0.id == id }) { recentProfile.jumpServer?.accessProfileID = nil }
                     do { try catalog.recordSuccess(profile: recentProfile) }
@@ -170,7 +175,7 @@ final class SessionModel: ObservableObject, Identifiable {
                 }
                 if attempt == token, !Task.isCancelled {
                     connected = true
-                    if !validationOnly { terminal.reset(); startTerminal() }
+                    if !validationOnly && origin == .interactive { terminal.reset(); startTerminal() }
                     onConnected?(id)
                 }
             } catch {

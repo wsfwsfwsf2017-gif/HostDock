@@ -61,8 +61,10 @@ private struct TerminalSurface: NSViewRepresentable {
 
 struct TerminalPane: View {
     @ObservedObject var app: SessionModel
+    var showHeader = true
     var body: some View {
         VStack(spacing: 0) {
+            if showHeader || !app.terminalRunning {
             HStack(spacing: 8) {
                 Image(systemName: "terminal")
                 Text("终端").fontWeight(.medium)
@@ -75,6 +77,7 @@ struct TerminalPane: View {
             }.buttonStyle(DockButtonStyle()).font(.system(size: 12)).padding(.horizontal, 14).frame(height: 48)
                 .background(DockTheme.surface)
             Divider()
+            }
             TerminalSurface(controller: app.terminal).padding(.horizontal, 8).padding(.top, 5)
         }.background(DockTheme.surface)
     }

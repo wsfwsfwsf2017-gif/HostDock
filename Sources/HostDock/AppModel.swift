@@ -22,9 +22,20 @@ final class AppModel: ObservableObject {
     let reservations = TransferReservations()
     lazy var automation = AutomationController(app: self)
     @Published private(set) var sessions: [SessionModel] = []
-    @Published var selectedSessionID: UUID?
+    @Published private(set) var backgroundSessions: [SessionModel] = []
+    var allSessions: [SessionModel] { sessions + backgroundSessions }
+    @Published var workspace = WorkspaceArrangement()
+    @Published var selectedSessionID: UUID? {
+        didSet {
+            if let id = selectedSessionID, sessions.contains(where: { $0.id == id }) { workspace.activate(id) }
+        }
+    }
+    @Published var pickerEditing = false
+    @Published var pickerAuthenticating = false
+    @Published var closingSessionID: UUID?
+    @Published var workspaceNotice: String?
     @Published var pickerSelection: ConnectionPickerSelection
-    @Published var connectionPickerPresented = true {
+    @Published var connectionPickerPresented = false {
         didSet { if oldValue && !connectionPickerPresented { cancelPickerAttempts() } }
     }
     @Published private(set) var pickerCancelling = false
@@ -53,7 +64,7 @@ final class AppModel: ObservableObject {
         self.credentials = credentials
         self.makeConnection = makeConnection
         self.preferences = preferences
-        pickerSelection = catalog.profiles.first.map { .saved($0.id) } ?? .new
+        pickerSelection = .new
         Task { await refreshSavedConnections() }
     }
 
@@ -93,9 +104,6 @@ final class AppModel: ObservableObject {
                 if profile.lastValidatedAt != nil { ready.insert(profile.id) }
             }
             readyProfileIDs = ready
-            if !pickerBusy, case .saved(let id) = pickerSelection, id == nil || !ready.contains(id!) {
-                pickerSelection = savedProfiles.first.map { .saved($0.id) } ?? .new
-            }
         }
         credentialRefreshTask = task
         await task.value
@@ -131,16 +139,18 @@ final class AppModel: ObservableObject {
         return sessions.first { $0.profile.id == profile.id || $0.profile.endpoint == profile.endpoint }
     }
     var pickerBusy: Bool { pickerCancelling || updatingRecords || pickerSession?.connecting == true || pickerSession?.disconnecting == true }
-    var hasTransfers: Bool { sessions.contains { $0.transferring } }
+    var hasTransfers: Bool { allSessions.contains { $0.transferring } }
     func isActive(_ profile: ConnectionProfile) -> Bool {
-        sessions.contains { $0.profile.id == profile.id && ($0.connected || $0.busy) }
+        allSessions.contains { $0.profile.id == profile.id && ($0.connected || $0.busy) }
     }
 
     func showConnections() {
         guard !shuttingDown, !pickerCancelling, !connectionPickerPresented else { return }
         newProfile = ConnectionProfile(name: "", endpoint: ConnectionEndpoint(host: "", port: 22, username: ""))
         newAccessProfile = nil
-        pickerSelection = savedProfiles.first.map { .saved($0.id) } ?? .new
+        pickerSelection = .new
+        pickerEditing = false
+        pickerAuthenticating = false
         connectionPickerPresented = true
     }
 
@@ -148,7 +158,69 @@ final class AppModel: ObservableObject {
         guard !shuttingDown, !pickerCancelling else { return }
         if readyProfileIDs.contains(session.profile.id) { pickerSelection = .saved(session.profile.id) }
         else { useDraft(session.profile) }
+        pickerEditing = false
+        pickerAuthenticating = false
         connectionPickerPresented = true
+    }
+
+    func showProfile(_ profile: ConnectionProfile, editing: Bool = false, authenticating: Bool = false) {
+        guard !shuttingDown, !pickerBusy else { return }
+        if catalog.profiles.contains(where: { $0.id == profile.id }) { pickerSelection = .saved(profile.id) }
+        else { useDraft(profile) }
+        pickerEditing = editing
+        pickerAuthenticating = authenticating
+        connectionPickerPresented = true
+    }
+
+    func openProfile(_ profile: ConnectionProfile) throws {
+        if let existing = sessions.first(where: { $0.profile.id == profile.id || $0.profile.endpoint == profile.endpoint }), existing.connected || existing.busy {
+            selectedSessionID = existing.id; return
+        }
+        if readyProfileIDs.contains(profile.id) { _ = try connect(profile: profile, password: nil, rememberPassword: true) }
+        else { showProfile(profile) }
+    }
+
+    func setLayout(_ layout: WorkspaceLayout) {
+        workspace.setLayout(layout, tabs: sessions.map(\.id))
+        selectedSessionID = workspace.slots[workspace.activeSlot]
+    }
+
+    func placeTab(_ id: UUID, at index: Int) {
+        guard sessions.contains(where: { $0.id == id }) else { return }
+        workspace.place(id, at: index)
+        selectedSessionID = id
+    }
+
+    func moveTab(_ id: UUID, before target: UUID?) {
+        guard id != target, let from = sessions.firstIndex(where: { $0.id == id }) else { return }
+        let session = sessions.remove(at: from)
+        sessions.insert(session, at: sessions.firstIndex(where: { $0.id == target }) ?? sessions.endIndex)
+    }
+
+    func requestCloseTab(_ session: SessionModel) {
+        guard session.origin == .interactive else { return }
+        if session.transferring || RemoteEditors.shared.hasUnuploadedEdits(in: session) { closingSessionID = session.id }
+        else { Task { await closeTab(session) } }
+    }
+
+    func closeTab(_ session: SessionModel) async {
+        do { try RemoteEditors.shared.closeEditors(in: session) }
+        catch { workspaceNotice = "草稿未能保存，会话已保留：" + error.localizedDescription; closingSessionID = nil; return }
+        await closeSession(session)
+        closingSessionID = nil
+    }
+
+    @discardableResult
+    func connectBackground(profile: ConnectionProfile) throws -> SessionModel {
+        guard !shuttingDown, !updatingRecords else { throw HostDockError("应用正在处理连接资料，请稍后重试。") }
+        let resolved = try catalog.resolve(profile)
+        _ = try catalog.validate(resolved.profile)
+        let session = SessionModel(profile: resolved.profile, catalog: catalog, credentials: credentials,
+                                   connection: makeConnection(), reservations: reservations, origin: .automation)
+        backgroundSessions.append(session)
+        observations[session.id] = session.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
+        session.connect(profile: resolved.profile, password: nil, rememberPassword: true, accessProfile: resolved.access)
+        return session
     }
 
     func selectPickerTab(_ tab: ConnectionPickerTab) {
@@ -177,14 +249,6 @@ final class AppModel: ObservableObject {
             pickerAttempts[result.id] = pickerAttempts[result.id] ?? (previous == nil)
         }
         return result
-    }
-
-    func presentPendingAutomation(_ session: SessionModel, created: Bool) {
-        pickerSelection = .saved(session.profile.id)
-        pickerConnectionSelection = pickerSelection
-        pickerSessionID = session.id
-        pickerAttempts[session.id] = created
-        connectionPickerPresented = true
     }
 
     private func cancelPickerAttempts() {
@@ -284,7 +348,7 @@ final class AppModel: ObservableObject {
         guard !updatingRecords, !shuttingDown else { throw HostDockError("正在处理连接，请稍后重试。") }
         guard !catalog.profiles.contains(where: { $0.jumpServer?.accessProfileID == access.id }),
               !catalog.recent.contains(where: { $0.jumpServer?.accessProfileID == access.id }),
-              !sessions.contains(where: { $0.profile.jumpServer?.accessProfileID == access.id && ($0.connected || $0.busy) }) else {
+              !allSessions.contains(where: { $0.profile.jumpServer?.accessProfileID == access.id && ($0.connected || $0.busy) }) else {
             throw HostDockError("堡垒机仍被服务器或历史记录使用，暂不能删除。")
         }
         updatingRecords = true; defer { updatingRecords = false }
@@ -318,7 +382,7 @@ final class AppModel: ObservableObject {
             throw error
         }
         await refreshSavedConnections()
-        for session in sessions.filter({ $0.profile.id == profile.id }) { await closeSession(session) }
+        for session in allSessions.filter({ $0.profile.id == profile.id }) { await closeSession(session) }
     }
 
     func removeProfile(_ profile: ConnectionProfile) async throws {
@@ -329,13 +393,15 @@ final class AppModel: ObservableObject {
         try await credentials.remove(account: profile.credentialAccount)
         try catalog.remove(profile)
         await refreshSavedConnections()
-        for session in sessions.filter({ $0.profile.id == profile.id }) { await closeSession(session) }
+        for session in allSessions.filter({ $0.profile.id == profile.id }) { await closeSession(session) }
         if pickerSelection == .saved(profile.id) { pickerSelection = .saved(catalog.profiles.first?.id) }
     }
 
     func closeSession(_ session: SessionModel) async {
         await session.shutdown()
         sessions.removeAll { $0.id == session.id }
+        backgroundSessions.removeAll { $0.id == session.id }
+        workspace.remove(session.id)
         observations.removeValue(forKey: session.id)
         pickerAttempts.removeValue(forKey: session.id)
         if selectedSessionID == session.id { selectedSessionID = sessions.first?.id }
@@ -350,7 +416,7 @@ final class AppModel: ObservableObject {
         connectionPickerPresented = false
         await pickerCleanupTask?.value
         await withTaskGroup(of: Void.self) { group in
-            for session in sessions { group.addTask { await session.shutdown() } }
+            for session in allSessions { group.addTask { await session.shutdown() } }
         }
     }
 }

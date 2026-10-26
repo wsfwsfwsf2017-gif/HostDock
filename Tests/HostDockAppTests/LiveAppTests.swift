@@ -155,6 +155,7 @@ private func prepareEncryptedReconnect(host: String, username: String, password:
     let profile = try ConnectionProfile(name: "重启连接验收", endpoint: ConnectionEndpoint(host: host, port: 22, username: username), localStartDirectory: local.path).validated()
     let app = AppModel(catalog: catalog, credentials: credentials)
     do {
+        app.showConnections()
         app.pickerSelection = .saved(profile.id)
         let session = try app.connectFromPicker(profile: profile, password: password, rememberPassword: true)
         try await finishLivePickerConnection(session, pins: pins)
@@ -191,6 +192,7 @@ func encryptedPasswordReconnectsInNewProcess() async throws {
     let profile = try #require(catalog.profiles.first)
     let app = AppModel(catalog: catalog, credentials: EncryptedFileCredentialStore(directory: root))
     do {
+        app.showConnections()
         let session = try app.connectFromPicker(profile: profile, password: nil, rememberPassword: true)
         try await finishLivePickerConnection(session, pins: pins)
         #expect(!app.connectionPickerPresented && app.selectedSession === session)

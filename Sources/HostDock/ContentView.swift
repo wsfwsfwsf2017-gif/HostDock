@@ -20,7 +20,7 @@ struct ContentView: View {
                     .frame(width: 190).accessibilityLabel("工作区模式")
                 if app.workspaceMode == .files { UploadButton(app: app) }
                 if app.connected {
-                    Button("断开", action: app.disconnect).help("断开连接，保留侧栏会话以便重连").disabled(app.disconnecting)
+                    Button("断开", action: app.disconnect).help("断开连接，保留标签以便重连").disabled(app.disconnecting)
                 }
             }.buttonStyle(DockButtonStyle()).padding(.horizontal, 20).frame(height: 66).background(DockTheme.surface)
             Rectangle().fill(DockTheme.border).frame(height: 1)
@@ -124,7 +124,7 @@ private struct TransferStatus: View {
     }
 }
 
-private struct FileConflictCard: View {
+struct FileConflictCard: View {
     @ObservedObject var app: SessionModel
     let conflict: FileConflict
     var body: some View {

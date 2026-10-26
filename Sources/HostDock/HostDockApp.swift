@@ -46,6 +46,8 @@ private struct HostDockCommands: Commands {
             }.keyboardShortcut("f", modifiers: .command).disabled(editors.focused == nil)
         }
         CommandMenu("连接") {
+            Button("关闭当前标签") { if let session = model.selectedSession { model.requestCloseTab(session) } }
+                .keyboardShortcut("w", modifiers: [.command, .shift]).disabled(model.selectedSession == nil)
             Button("断开当前连接，保留会话") { model.selectedSession?.disconnect() }
                 .disabled(model.selectedSession?.connected != true || model.selectedSession?.disconnecting == true)
             Divider()
@@ -133,10 +135,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !terminating else { return .terminateCancel }
         terminating = true
         Task {
-            if model.hasTransfers || RemoteEditors.shared.hasUnuploadedEdits {
+            if model.hasTransfers || model.automation.activeCount > 0 || RemoteEditors.shared.hasUnuploadedEdits {
                 let alert = NSAlert()
-                alert.messageText = "仍有传输或未上传的编辑内容"
-                alert.informativeText = "退出将保留本机编辑草稿，取消所有会话的传输并清理临时文件，已完成的项目保留。"
+                alert.messageText = "仍有传输、AI 请求或未上传的编辑内容"
+                alert.informativeText = "退出将保留本机编辑草稿，取消人工与 AI 后台任务，关闭全部连接并清理临时文件，已完成的项目保留。"
                 alert.addButton(withTitle: "继续使用")
                 alert.addButton(withTitle: "保留草稿并退出")
                 guard let window = sender.keyWindow ?? sender.windows.first(where: { $0.isVisible }) else {

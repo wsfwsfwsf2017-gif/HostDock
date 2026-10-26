@@ -17,7 +17,8 @@ final class AutomationController: ObservableObject {
     private var tasks: [UUID: Task<ControlResponse, Never>] = [:]
     private var requests: [UUID: ControlRequest] = [:]
     private var executing: Set<UUID> = []
-    private var pendingConnections: [UUID: (attempt: UUID, created: Bool)] = [:]
+    private var connectingRequests: [UUID: UUID] = [:]
+    @Published private(set) var connectionNotices: [UUID: String] = [:]
     init(app: AppModel, defaults: UserDefaults = .standard, socketURL: URL = ControlSocket.url) {
         self.app = app; self.defaults = defaults; self.socketURL = socketURL
     }
@@ -47,13 +48,23 @@ final class AutomationController: ObservableObject {
         let current = Array(tasks.values)
         for task in current { task.cancel() }
         for task in current { _ = await task.value }
-        for (id, pending) in pendingConnections {
-            if let session = app?.sessions.first(where: { $0.id == id }), !session.connected, session.connectionAttemptID == pending.attempt {
-                if pending.created { await app?.closeSession(session) } else { session.cancelConnection() }
-            }
-        }
-        pendingConnections.removeAll()
+        for session in app?.backgroundSessions ?? [] { await app?.closeSession(session) }
+        connectingRequests.removeAll(); connectionNotices.removeAll()
         await server?.stop(); server = nil
+    }
+
+    func stopBackground(_ id: UUID) async {
+        guard let session = app?.backgroundSessions.first(where: { $0.id == id }) else { return }
+        let owned = tasks.filter { requests[$0.key]?.arguments["session"] == id.uuidString || connectingRequests[$0.key] == id }
+        for task in owned.values { task.cancel() }
+        session.cancelConnection()
+        for task in owned.values { _ = await task.value }
+        if app?.backgroundSessions.contains(where: { $0.id == id }) == true { await app?.closeSession(session) }
+    }
+
+    func dismissNotice(_ profileID: UUID) { connectionNotices.removeValue(forKey: profileID) }
+    func operations(in session: SessionModel) -> [String] {
+        requests.values.filter { $0.arguments["session"] == session.id.uuidString || connectingRequests[$0.id] == session.id }.map(\.command).sorted()
     }
     func handle(_ request: ControlRequest) async -> ControlResponse {
         guard enabled, app?.shuttingDown == false else { return ControlResponse(request.id, error: ControlFailure("DISABLED", "请先在设置中开启「允许 AI 操作 HostDock」。")) }
@@ -82,20 +93,23 @@ final class AutomationController: ObservableObject {
     }
     private func session(_ request: ControlRequest) throws -> SessionModel {
         let id = try request.uuid("session")
-        guard let session = app?.sessions.first(where: { $0.id == id }) else { throw ControlFailure("SESSION_NOT_FOUND", "指定会话不存在。") }
+        if app?.sessions.contains(where: { $0.id == id }) == true {
+            throw ControlFailure("SESSION_SCOPE_MISMATCH", "该会话属于人工工作区，请先通过 connect 创建独立后台会话。")
+        }
+        guard let session = app?.backgroundSessions.first(where: { $0.id == id }) else { throw ControlFailure("SESSION_NOT_FOUND", "指定后台会话不存在。") }
         return session
     }
     private func summary(_ session: SessionModel) -> ControlValue {
         .object(["id": .string(session.id.uuidString), "profileId": .string(session.profile.id.uuidString), "name": .string(session.profile.name),
                  "host": .string(session.profile.targetHost), "username": .string(session.profile.targetUsername), "connected": .bool(session.connected),
                  "state": .string(session.status), "terminalReady": .bool(session.terminalReady), "transferring": .bool(session.transferring),
-                 "progress": .number(session.progress), "needsAttention": .bool(session.needsAttention)])
+                 "progress": .number(session.progress), "needsAttention": .bool(session.needsAttention), "origin": .string("automation")])
     }
     private func perform(_ request: ControlRequest) async throws -> ControlValue {
         guard let app else { throw ControlFailure("APP_UNAVAILABLE", "应用正在退出。") }
         switch request.command {
         case "status":
-            return .object(["enabled": .bool(enabled), "sessions": .number(Double(app.sessions.count)), "requests": .array(requests.values.filter { $0.id != request.id }.map {
+            return .object(["enabled": .bool(enabled), "sessions": .number(Double(app.backgroundSessions.count)), "requests": .array(requests.values.filter { $0.id != request.id }.map {
                 .object(["id": .string($0.id.uuidString), "command": .string($0.command), "sessionId": $0.arguments["session"].map(ControlValue.string) ?? .null])
             })])
         case "profiles.list":
@@ -104,7 +118,7 @@ final class AutomationController: ObservableObject {
                 .object(["id": .string(profile.id.uuidString), "name": .string(profile.name), "host": .string(profile.targetHost),
                          "username": .string(profile.targetUsername), "mode": .string(profile.connectionMode.rawValue), "ready": .bool(app.readyProfileIDs.contains(profile.id))])
             })
-        case "sessions.list": return .array(app.sessions.map(summary))
+        case "sessions.list": return .array(app.backgroundSessions.map(summary))
         case "connect": return try await connect(request, app: app)
         case "cancel":
             let id = try request.uuid("request")
@@ -189,33 +203,22 @@ final class AutomationController: ObservableObject {
     private func connect(_ request: ControlRequest, app: AppModel) async throws -> ControlValue {
         let id = try request.uuid("profile")
         guard let profile = app.catalog.profiles.first(where: { $0.id == id }) else { throw ControlFailure("PROFILE_NOT_FOUND", "指定保存记录不存在。") }
-        if let existing = app.sessions.first(where: { $0.profile.id == profile.id || $0.profile.endpoint == profile.endpoint }), existing.connected {
-            app.selectedSessionID = existing.id
-            return summary(existing)
-        }
-        guard !app.sessions.contains(where: { ($0.profile.id == profile.id || $0.profile.endpoint == profile.endpoint) && $0.busy }) else { throw ControlFailure("BUSY", "该服务器正在连接或清理中。") }
         await app.refreshSavedConnections()
         guard app.readyProfileIDs.contains(id) else {
-            app.useDraft(profile); app.connectionPickerPresented = true
+            connectionNotices[id] = "请完善认证并验证保存，然后重新发起后台连接。"
             throw ControlFailure("AUTH_REQUIRED", "请在应用中补齐并验证认证资料。")
         }
         try Task.checkCancellation()
-        if let existing = app.sessions.first(where: { $0.profile.id == profile.id || $0.profile.endpoint == profile.endpoint }) {
-            if existing.connected { app.selectedSessionID = existing.id; return summary(existing) }
-            guard !existing.busy else { throw ControlFailure("BUSY", "已有连接正在处理，未接管或取消它。") }
-        }
-        guard !app.pickerBusy else { throw ControlFailure("BUSY", "连接弹窗正在处理其他连接，请稍后重试。") }
-        let created = !app.sessions.contains(where: { $0.profile.id == profile.id || $0.profile.endpoint == profile.endpoint })
-        let session = try app.connect(profile: profile, password: nil, rememberPassword: true)
+        connectionNotices.removeValue(forKey: id)
+        let session = try app.connectBackground(profile: profile)
+        connectingRequests[request.id] = session.id
         session.automationRequests += 1
-        defer { session.automationRequests -= 1 }
+        defer { session.automationRequests -= 1; connectingRequests.removeValue(forKey: request.id) }
         do {
             for _ in 0..<9000 {
                 try Task.checkCancellation()
-                if session.connected { app.connectionPickerPresented = false; return summary(session) }
+                if session.connected { return summary(session) }
                 if session.hostTrustRequest != nil || session.passwordRequired {
-                    pendingConnections[session.id] = (session.connectionAttemptID, created)
-                    app.presentPendingAutomation(session, created: created)
                     return .object(["state": .string("needs_user_action"), "sessionId": .string(session.id.uuidString), "message": .string("请在 HostDock 中核对指纹或更新认证，然后通过 sessions list 查看状态。")])
                 }
                 if !session.connecting { throw ControlFailure("CONNECT_FAILED", session.connectionError ?? "连接未完成，请在应用中检查认证。") }
@@ -223,7 +226,8 @@ final class AutomationController: ObservableObject {
             }
             throw ControlFailure("TIMEOUT", "连接超时。")
         } catch {
-            if !session.connected { if created { await app.closeSession(session) } else { session.cancelConnection() } }
+            if !(error is CancellationError) { connectionNotices[id] = error.localizedDescription }
+            if app.backgroundSessions.contains(where: { $0.id == session.id }) { await app.closeSession(session) }
             throw error
         }
     }
@@ -240,7 +244,7 @@ struct AutomationSettingsView: View {
             Label("AI 与自动化", systemImage: "terminal").font(.title2.bold())
             Toggle("允许 AI 操作 HostDock", isOn: Binding(get: { controller.enabled }, set: { value in Task { await controller.setEnabled(value) } }))
                 .disabled(controller.changing)
-            Text("允许 AI 或命令行程序通过 HostDock 连接服务器、执行命令和传输文件。")
+            Text("允许 AI 或命令行程序在后台连接服务器、执行命令和传输文件。")
                 .font(.system(size: 12)).foregroundStyle(DockTheme.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if let notice = controller.notice { DockNotice(text: notice) }

@@ -24,9 +24,11 @@ struct HostDockCLI {
       cancel --request <本次请求ID>
     
     先启动 HostDock，在“设置 → AI 与自动化”中开启“允许 AI 操作 HostDock”。
-    连接仅使用已保存的认证；主机指纹确认和认证缺失由应用处理。
+    connect 每次新建独立后台连接；sessions list 只列后台会话。
+    --session 必须使用后台 ID；人工标签 ID 返回 SESSION_SCOPE_MISMATCH。
+    连接仅使用已保存的认证；指纹和冲突需用户主动打开“AI 后台”处理。
     终端输入成功仅表示已发送；请通过 terminal read 读取实际结果。
-    Ctrl+C 或终止 CLI 只取消本次请求。文件冲突在所属会话中处理。
+    Ctrl+C 或终止 CLI 只取消本次请求。不会占用人工终端；关闭 AI 开关会取消任务并断开全部后台连接。
     不提供密码参数；不修改 PATH；无网络监听端口。
     """
     static func main() async {

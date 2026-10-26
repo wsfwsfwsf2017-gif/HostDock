@@ -275,6 +275,6 @@ private func assetFixture(_ index: Int, access: JumpServerAccessProfile) throws 
     let result = await controller.handle(ControlRequest(command: "connect", arguments: ["profile": profile.id.uuidString]))
     #expect(result.ok)
     #expect(await transport.endpoints.first == ConnectionEndpoint(host: updated.host, port: updated.port, username: "李四@ssta@192.0.2.1"))
-    #expect(app.sessions.first?.profile.id == profile.id)
+    #expect(app.backgroundSessions.first?.profile.id == profile.id && app.sessions.isEmpty && app.selectedSessionID == nil)
     await controller.setEnabled(false); await app.shutdown(); await reopened.shutdown()
 }

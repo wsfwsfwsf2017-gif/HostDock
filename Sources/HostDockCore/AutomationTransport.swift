@@ -140,26 +140,28 @@ public enum ControlClient {
         let loop = group.next()
         let promise = loop.makePromise(of: ControlResponse.self)
         let handler = ControlClientHandler(promise)
+        var channel: Channel?
         do {
-            let channel = try await ClientBootstrap(group: group).connectTimeout(.seconds(5)).channelInitializer { channel in
+            let connected = try await ClientBootstrap(group: group).connectTimeout(.seconds(5)).channelInitializer { channel in
                 channel.pipeline.addHandler(handler)
             }.connect(unixDomainSocketPath: url.path).get()
-            defer { channel.close(promise: nil) }
+            channel = connected
             let result = try await withTaskCancellationHandler {
                 let data = try JSONEncoder().encode(request)
                 guard data.count <= 1_048_575 else { throw ControlFailure("INVALID_ARGUMENT", "请求过大。") }
-                var bytes = channel.allocator.buffer(capacity: data.count + 1); bytes.writeBytes(data); bytes.writeInteger(UInt8(10))
-                try await channel.writeAndFlush(bytes).get()
+                var bytes = connected.allocator.buffer(capacity: data.count + 1); bytes.writeBytes(data); bytes.writeInteger(UInt8(10))
+                try await connected.writeAndFlush(bytes).get()
                 let response = try await promise.futureResult.get()
                 guard response.version == 1, response.requestID == request.id else { throw ControlFailure("INVALID_RESPONSE", "应用返回了不匹配的请求结果。") }
                 try Task.checkCancellation()
                 return response
-            } onCancel: { channel.close(promise: nil) }
-            try? await channel.close().get()
+            } onCancel: { connected.close(promise: nil) }
+            try? await connected.close().get()
             await shutdown(group)
             return result
         } catch {
             try? await loop.submit { handler.fail(error) }.get()
+            try? await channel?.close().get()
             await shutdown(group); throw error
         }
     }

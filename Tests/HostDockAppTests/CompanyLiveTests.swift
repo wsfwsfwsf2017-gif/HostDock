@@ -53,8 +53,8 @@ func savedDirectAndJumpProfilesConnectWithReadOnlyCredentials() async throws {
             await app.refreshSavedConnections()
             #expect(app.savedProfiles.count == profiles.count)
             for profile in app.savedProfiles {
-                app.showConnections()
                 print("CHECK \(profile.connectionMode.title) 第 \(round + 1) 次连接")
+                app.showConnections()
                 let session = try app.connectFromPicker(profile: profile, password: nil, rememberPassword: true)
                 try await waitForCompany { await MainActor.run { !session.connecting || session.hostTrustRequest != nil } }
                 guard session.hostTrustRequest == nil else { throw HostDockError("服务器指纹变化，停止只读验收") }
@@ -135,6 +135,7 @@ func liveCompanyKeyAuthenticationFilesEditorAndAssetMapping() async throws {
     var store: (any FileStore)?
     var ownsRoot = false
     do {
+        app.showConnections()
         let session = try app.connectFromPicker(profile: profile, password: nil, rememberPassword: true)
         try await waitUntil { session.hostTrustRequest != nil || !session.connecting }
         if let challenge = session.hostTrustRequest {
@@ -229,6 +230,7 @@ func liveCompanyKeyAuthenticationFilesEditorAndAssetMapping() async throws {
         let restarted = AppModel(catalog: ConnectionCatalog(storage: FileConnectionStorage(url: catalogURL)), credentials: credentials)
         await restarted.refreshSavedConnections()
         let saved = try #require(restarted.savedProfiles.first)
+        restarted.showConnections()
         let again = try restarted.connectFromPicker(profile: saved, password: nil, rememberPassword: true)
         try await waitUntil { !again.connecting }
         #expect(again.connected && !again.passwordRequired)
@@ -277,6 +279,7 @@ func installVerifiedKeyConnectionProfile() async throws {
     profile.rememberPassword = true
     let app = AppModel(catalog: catalog)
     do {
+        app.showConnections()
         let session = try app.connectFromPicker(profile: profile, password: nil, rememberPassword: true)
         try await waitUntil { session.hostTrustRequest != nil || !session.connecting }
         if let request = session.hostTrustRequest {
@@ -306,7 +309,7 @@ func installVerifiedKeyConnectionProfile() async throws {
 
 @MainActor
 @Test(.enabled(if: ProcessInfo.processInfo.environment["HOSTDOCK_AUTOMATION_LIVE"] == "1"))
-func automationUsesRealSavedProfilesAndCLIInTemporaryDirectories() async throws {
+func automationUsesRealSavedProfilesInTemporaryDirectories() async throws {
     _ = NSApplication.shared; NSApp.setActivationPolicy(.prohibited)
     let env = ProcessInfo.processInfo.environment
     let ids = Set(try #require(env["HOSTDOCK_SAVED_PROFILE_IDS"]).split(separator: ",").map(String.init))
@@ -315,7 +318,6 @@ func automationUsesRealSavedProfilesAndCLIInTemporaryDirectories() async throws 
     selectedDocument.profiles = profiles; selectedDocument.recent = []
     #expect(profiles.count == 2)
     let remoteTmp = try JSONDecoder().decode([String: String].self, from: Data(try #require(env["HOSTDOCK_LIVE_REMOTE_TMP"]).utf8))
-    let cli = try #require(env["HOSTDOCK_CLI_PATH"])
     let trust = try #require(UserDefaults(suiteName: "app.hostdock.mac")?.dictionary(forKey: "trustedHostKeys") as? [String: String])
     let oldTrust = UserDefaults.standard.object(forKey: "trustedHostKeys")
     UserDefaults.standard.set(trust, forKey: "trustedHostKeys")
@@ -326,23 +328,31 @@ func automationUsesRealSavedProfilesAndCLIInTemporaryDirectories() async throws 
     let suite = "HostDock-v7-live-" + UUID().uuidString
     let defaults = try #require(UserDefaults(suiteName: suite)); defer { defaults.removePersistentDomain(forName: suite) }
     let app = AppModel(catalog: ConnectionCatalog(storage: MemoryConnectionStorage(selectedDocument)), credentials: ReadOnlySavedCredentials(), preferences: defaults)
-    let controller = AutomationController(app: app, defaults: defaults)
+    let socket = FileManager.default.temporaryDirectory.appendingPathComponent("hdl-" + UUID().uuidString.prefix(8)).appendingPathComponent("control.sock")
+    defer { try? FileManager.default.removeItem(at: socket.deletingLastPathComponent()) }
+    let controller = AutomationController(app: app, defaults: defaults, socketURL: socket)
     var cleanup: [(any FileStore, String)] = []
     do {
         await controller.setEnabled(true)
-        guard controller.enabled else { throw HostDockError(controller.notice ?? "自动化未开启；请先关闭正式应用的自动化接口以便独立验收。") }
-        let listed = try await runLiveCLI(cli, ["profiles", "list"])
-        #expect(listed.response.ok)
+        guard controller.enabled else { throw HostDockError(controller.notice ?? "自动化验收接口未开启。") }
+        let listed = try await runLiveRequest(socket, ["profiles", "list"])
+        #expect(listed.ok)
         for profile in profiles {
-            let connected = try await runLiveCLI(cli, ["connect", "--profile", profile.id.uuidString])
-            guard connected.response.ok else { throw HostDockError(connected.response.error?.message ?? "CLI 连接失败") }
-            let session = try #require(app.sessions.first { $0.profile.id == profile.id })
-            #expect(session.connected && !session.passwordRequired && session.credentialNotice == nil)
-            try await waitForCompany { await MainActor.run { session.terminalReady } }
+            let manual = try app.connect(profile: profile, password: nil, rememberPassword: true)
+            try await waitForCompany { await MainActor.run { manual.terminalReady } }
         }
-        #expect(app.sessions.filter(\.connected).count == 2)
+        let selected = app.selectedSessionID, maximize = app.maximizeRequest, history = app.catalog.recent
+        let humanDirectories = app.sessions.map { ($0.local.path, $0.remote.path) }
         for profile in profiles {
-            let session = try #require(app.sessions.first { $0.profile.id == profile.id })
+            let connected = try await runLiveRequest(socket, ["connect", "--profile", profile.id.uuidString])
+            guard connected.ok else { throw HostDockError(connected.error?.message ?? "CLI 连接失败") }
+            let session = try #require(app.backgroundSessions.first { $0.profile.id == profile.id })
+            #expect(session.connected && !session.passwordRequired && session.credentialNotice == nil)
+            #expect(!session.terminalRunning && session.origin == .automation)
+        }
+        #expect(app.sessions.filter(\.connected).count == 2 && app.backgroundSessions.filter(\.connected).count == 2)
+        for profile in profiles {
+            let session = try #require(app.backgroundSessions.first { $0.profile.id == profile.id })
             let remote = try #require(session.remote.store)
             let temp = try #require(remoteTmp[profile.id.uuidString])
             let testName = "hostdock-check-" + UUID().uuidString
@@ -359,56 +369,52 @@ func automationUsesRealSavedProfilesAndCLIInTemporaryDirectories() async throws 
             try payload.write(to: source.appendingPathComponent("payload.bin"))
             try Data("HostDock 自动化验收\r\n".utf8).write(to: source.appendingPathComponent("说明.txt"))
             let args = ["--session", session.id.uuidString]
-            let uploaded = try await runLiveCLI(cli, ["files", "upload"] + args + ["--source", source.path, "--destination", target])
-            #expect(uploaded.response.ok)
+            let uploaded = try await runLiveRequest(socket, ["files", "upload"] + args + ["--source", source.path, "--destination", target])
+            #expect(uploaded.ok)
             #expect(try await FileOperations.digest(at: target + "/agent-source/payload.bin", in: remote) == digest)
-            let listed = try await runLiveCLI(cli, ["files", "list"] + args + ["--path", target])
-            #expect(listed.response.ok)
-            let downloaded = try await runLiveCLI(cli, ["files", "download"] + args + ["--source", target + "/agent-source", "--destination", downloads.path])
-            #expect(downloaded.response.ok)
+            let listed = try await runLiveRequest(socket, ["files", "list"] + args + ["--path", target])
+            #expect(listed.ok)
+            let downloaded = try await runLiveRequest(socket, ["files", "download"] + args + ["--source", target + "/agent-source", "--destination", downloads.path])
+            #expect(downloaded.ok)
             #expect(try Data(contentsOf: downloads.appendingPathComponent("agent-source/payload.bin")) == payload)
             #expect(FileManager.default.fileExists(atPath: downloads.appendingPathComponent("agent-source/中文 空目录").path))
-            let exec = try await runLiveCLI(cli, ["exec"] + args + ["--command", "printf 'HD_EXEC_OK\\n'; id -un; printf 'HD_STDERR\\n' >&2; exit 7", "--timeout", "15"])
-            if exec.response.ok {
-                #expect(exec.status == 7)
-                if case .object(let output) = exec.response.result {
+            let exec = try await runLiveRequest(socket, ["exec"] + args + ["--command", "printf 'HD_EXEC_OK\\n'; id -un; printf 'HD_STDERR\\n' >&2; exit 7", "--timeout", "15"])
+            if exec.ok {
+                if case .object(let output) = exec.result {
                     #expect(output["exitCode"] == .number(7))
                     #expect(output["stderr"] == .string("HD_STDERR\n"))
                 }
-                let timeout = try await runLiveCLI(cli, ["exec"] + args + ["--command", "sleep 3", "--timeout", "0.2"])
-                #expect(timeout.response.error?.code == "TIMEOUT")
-                let signalled = try await runLiveCLI(cli, ["exec"] + args + ["--command", "kill -TERM $$", "--timeout", "5"])
-                if case .object(let result) = signalled.response.result { #expect(result["exitCode"] != .number(0)) }
-                else { #expect(signalled.response.error?.code == "EXIT_STATUS_UNAVAILABLE") }
-                print("PASS \(profile.connectionMode.title) CLI exec stdout/stderr、非零退出码、超时、信号结束及通道清理")
+                let timeout = try await runLiveRequest(socket, ["exec"] + args + ["--command", "sleep 3", "--timeout", "0.2"])
+                #expect(timeout.error?.code == "TIMEOUT")
+                let signalled = try await runLiveRequest(socket, ["exec"] + args + ["--command", "kill -TERM $$", "--timeout", "5"])
+                if case .object(let result) = signalled.result { #expect(result["exitCode"] != .number(0)) }
+                else { #expect(signalled.error?.code == "EXIT_STATUS_UNAVAILABLE") }
+                print("PASS \(profile.connectionMode.title) 本机接口 exec stdout/stderr、非零退出码、超时、信号结束及通道清理")
             } else {
-                #expect(profile.connectionMode == .jumpServer && exec.response.error?.code == "EXEC_UNAVAILABLE")
+                #expect(profile.connectionMode == .jumpServer && exec.error?.code == "EXEC_UNAVAILABLE")
                 print("LIMIT \(profile.connectionMode.title) 网关拒绝标准 exec，返回明确错误，继续验收 PTY")
             }
             let marker = UUID().uuidString
             let command = "printf 'HD_IDENT='; id -un; sha256sum -- '/tmp/" + testName + "/agent-source/payload.bin'; printf 'HD_FINISHED=%s\\n' '" + marker + "'"
-            let sent = try await runLiveCLI(cli, ["terminal", "send"] + args + ["--text", command, "--enter"])
-            #expect(sent.response.ok)
+            let sent = try await runLiveRequest(socket, ["terminal", "send"] + args + ["--text", command, "--enter"])
+            #expect(sent.ok)
             var text = ""
             for _ in 0..<300 {
-                let snapshot = try await runLiveCLI(cli, ["terminal", "read"] + args + ["--tail", "200"])
-                if case .object(let value) = snapshot.response.result, case .string(let value) = value["text"] { text = value }
+                let snapshot = try await runLiveRequest(socket, ["terminal", "read"] + args + ["--tail", "200"])
+                if case .object(let value) = snapshot.result, case .string(let value) = value["text"] { text = value }
                 if text.contains("HD_IDENT=" + profile.targetUsername) && text.contains(digest) && text.contains("HD_FINISHED=" + marker) { break }
                 try await Task.sleep(for: .milliseconds(100))
             }
+            #expect(app.sessions.allSatisfy { !String(decoding: $0.terminal.view.getBufferAsData(), as: UTF8.self).contains(marker) })
             #expect(text.contains("HD_IDENT=" + profile.targetUsername) && text.contains(digest) && text.contains("HD_FINISHED=" + marker))
-            #expect(try await runLiveCLI(cli, ["terminal", "key"] + args + ["--key", "ctrl-c"]).response.ok)
+            #expect(try await runLiveRequest(socket, ["terminal", "key"] + args + ["--key", "ctrl-c"]).ok)
             let gate = TestGate()
             await session.remote.attach(store: GatedFileStore(base: remote, gate: gate), home: session.remote.home, initialDirectory: target)
             let cancelSource = local.appendingPathComponent("cancel.bin"); try payload.write(to: cancelSource)
-            let process = Process(); process.executableURL = URL(fileURLWithPath: cli)
-            process.arguments = ["files", "upload"] + args + ["--source", cancelSource.path, "--destination", target]
-            let output = Pipe(); process.standardOutput = output; process.standardError = FileHandle.nullDevice
-            try process.run()
+            let pending = Task { try await runLiveRequest(socket, ["files", "upload"] + args + ["--source", cancelSource.path, "--destination", target]) }
             try await waitForCompany { await gate.entered }
-            process.interrupt()
-            try await waitForCompany { !process.isRunning }
-            #expect(process.terminationStatus == 130)
+            pending.cancel()
+            if case .success = await pending.result { Issue.record("取消请求不应返回成功") }
             try await waitForCompany { await MainActor.run { !session.transferring } }
             #expect(try await remote.metadata(at: target + "/cancel.bin") == nil)
             #expect(try await !remote.list(at: target).contains { $0.name.hasSuffix(".part") })
@@ -416,30 +422,24 @@ func automationUsesRealSavedProfilesAndCLIInTemporaryDirectories() async throws 
             await session.remote.attach(store: remote, home: session.remote.home, initialDirectory: target)
             if let entry = try await remote.metadata(at: target) { try await FileOperations.remove([entry], in: remote) }
             #expect(try await remote.metadata(at: target) == nil)
-            print("PASS \(profile.connectionMode.title) CLI 一键连接、终端身份、SFTP 与 PTY 同一校验文件、文件夹 SHA-256、空目录、取消清理及另一会话保持连接")
+            print("PASS \(profile.connectionMode.title) 本机接口一键连接、终端身份、SFTP 与 PTY 同一校验文件、文件夹 SHA-256、空目录、取消清理及另一会话保持连接")
         }
+        #expect(app.selectedSessionID == selected && app.maximizeRequest == maximize && app.catalog.recent == history)
+        for (session, paths) in zip(app.sessions, humanDirectories) { #expect(session.local.path == paths.0 && session.remote.path == paths.1) }
         await controller.setEnabled(false)
-        #expect(app.sessions.allSatisfy { $0.connected })
+        #expect(app.backgroundSessions.isEmpty && app.sessions.count == 2 && app.sessions.allSatisfy { $0.connected })
         await app.shutdown()
     } catch {
-        await controller.setEnabled(false)
-        for session in app.sessions { session.cancelTransfer() }
+        for session in app.allSessions { session.cancelTransfer() }
         try? await waitForCompany { await MainActor.run { !app.hasTransfers } }
         for (store, path) in cleanup { if let entry = try? await store.metadata(at: path) { try? await FileOperations.remove([entry], in: store) } }
+        await controller.setEnabled(false)
         await app.shutdown()
         throw error
     }
 }
 
 @MainActor
-private func runLiveCLI(_ executable: String, _ arguments: [String]) async throws -> (response: ControlResponse, status: Int32) {
-    let process = Process(); process.executableURL = URL(fileURLWithPath: executable); process.arguments = arguments
-    let output = Pipe(); process.standardOutput = output; process.standardError = FileHandle.nullDevice
-    try process.run()
-    let deadline = Date().addingTimeInterval(100)
-    while process.isRunning {
-        if Date() > deadline { process.interrupt(); throw HostDockError("CLI 验收等待超时") }
-        try await Task.sleep(for: .milliseconds(20))
-    }
-    return (try JSONDecoder().decode(ControlResponse.self, from: output.fileHandleForReading.readDataToEndOfFile()), process.terminationStatus)
+private func runLiveRequest(_ socket: URL, _ arguments: [String]) async throws -> ControlResponse {
+    try await ControlClient.call(ControlRequest.parse(arguments), url: socket)
 }

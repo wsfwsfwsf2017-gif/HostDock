@@ -11,7 +11,13 @@
     <key>CFBundleDevelopmentRegion</key><string>zh-Hans</string>
     <key>CFBundleLocalizations</key><array><string>zh-Hans</string></array>
     <key>CFBundleShortVersionString</key><string>1.0.2</string>
-    <key>CFBundleVersion</key><string>16</string>
+    <key>CFBundleVersion</key><string>17</string>
+    <key>UTExportedTypeDeclarations</key>
+    <array><dict>
+        <key>UTTypeIdentifier</key><string>app.hostdock.session-tab</string>
+        <key>UTTypeDescription</key><string>HostDock 会话标签</string>
+        <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+    </dict></array>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSHighResolutionCapable</key><true/>

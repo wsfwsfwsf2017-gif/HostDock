@@ -159,6 +159,15 @@ final class RemoteEditors: ObservableObject {
     @Published var focused: RemoteDocument?
     private var windows: [String: RemoteEditorWindow] = [:]
     var hasUnuploadedEdits: Bool { windows.values.contains { $0.model.isDirty || $0.model.saving } }
+    func hasUnuploadedEdits(in session: SessionModel) -> Bool {
+        windows.values.contains { $0.model.session === session && ($0.model.isDirty || $0.model.saving) }
+    }
+    func closeEditors(in session: SessionModel) throws {
+        let owned = windows.values.filter { $0.model.session === session }
+        do { for window in owned { window.model.isClosing = true; try window.model.persistDraft() } }
+        catch { for window in owned { window.model.isClosing = false }; throw error }
+        for window in owned { window.forceClose() }
+    }
     func open(_ entry: FileEntry, session: SessionModel) async throws {
         let key = RemoteDocument.key(identity: session.verifiedRemoteIdentity, path: entry.path)
         if let existing = windows[key], existing.model.session === session {

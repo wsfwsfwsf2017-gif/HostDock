@@ -25,6 +25,7 @@ private actor PausedCredentialStore: CredentialStore {
     let credentials = PausedCredentialStore(gate: gate)
     let app = AppModel(catalog: ConnectionCatalog(storage: MemoryConnectionStorage()), credentials: credentials,
                        makeConnection: { FakeSessionConnection(home: f.remote(0)) })
+    app.showConnections()
     let session = try app.connectFromPicker(profile: f.profiles[0], password: "synthetic", rememberPassword: true)
     for _ in 0..<400 {
         if await gate.entered { break }
@@ -61,6 +62,7 @@ private actor PausedCredentialStore: CredentialStore {
     let restarted = AppModel(catalog: ConnectionCatalog(storage: storage), credentials: credentials, makeConnection: { next })
     await restarted.refreshSavedConnections()
     let saved = try #require(restarted.savedProfiles.first)
+    restarted.showConnections()
     let second = try restarted.connectFromPicker(profile: saved, password: nil, rememberPassword: true)
     try await waitUntil { second.connected && !second.connecting }
     #expect(!second.passwordRequired && !restarted.connectionPickerPresented)
