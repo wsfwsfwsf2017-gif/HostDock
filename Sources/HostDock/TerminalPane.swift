@@ -2,9 +2,35 @@ import AppKit
 import SwiftTerm
 import SwiftUI
 
+// 原生终端会消费点击，活动区域需跟随 AppKit 焦点与鼠标事件。
+final class SessionTerminalView: TerminalView {
+    var onFocus: (() -> Void)?
+    override func mouseDown(with event: NSEvent) {
+        onFocus?()
+        super.mouseDown(with: event)
+    }
+    override func rightMouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        onFocus?()
+        super.rightMouseDown(with: event)
+    }
+    override var hasFocus: Bool {
+        get { super.hasFocus }
+        set {
+            super.hasFocus = newValue
+            if newValue {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.window?.firstResponder === self else { return }
+                    self.onFocus?()
+                }
+            }
+        }
+    }
+}
+
 @MainActor
 final class TerminalController: NSObject, TerminalViewDelegate {
-    let view = TerminalView(frame: CGRect(x: 0, y: 0, width: 900, height: 600), font: .monospacedSystemFont(ofSize: 12, weight: .regular))
+    let view = SessionTerminalView(frame: CGRect(x: 0, y: 0, width: 900, height: 600), font: .monospacedSystemFont(ofSize: 12, weight: .regular))
     var columns = 100
     var rows = 16
     var ready = false

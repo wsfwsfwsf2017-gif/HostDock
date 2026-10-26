@@ -290,6 +290,11 @@ final class AppModel: ObservableObject {
         else {
             session = SessionModel(profile: profile, catalog: catalog, credentials: credentials,
                                    connection: makeConnection(), reservations: reservations)
+            session.terminal.view.onFocus = { [weak self, weak session] in
+                guard let self, let session, !self.shuttingDown, self.selectedSessionID != session.id,
+                      self.sessions.contains(where: { $0.id == session.id }) else { return }
+                self.selectedSessionID = session.id
+            }
             session.onConnected = { [weak self] id in
                 guard let self else { return }
                 Task { await self.refreshSavedConnections() }

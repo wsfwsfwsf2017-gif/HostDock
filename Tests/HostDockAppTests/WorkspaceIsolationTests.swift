@@ -300,3 +300,33 @@ private func backgroundController(_ app: AppModel) async throws -> AutomationCon
     #expect(try !FileManager.default.contentsOfDirectory(atPath: fixture.remote(0)).contains { $0.contains(".part") })
     await app.shutdown()
 }
+
+@MainActor
+@Test func nativeTerminalFocusSelectsItsPaneBeforeMenusAct() async throws {
+    let fixture = try SessionFixture(); defer { fixture.clean() }
+    let app = fixture.app(transports: [FakeSessionConnection(home: fixture.remote(0)), FakeSessionConnection(home: fixture.remote(1))])
+    let a = try app.connect(profile: fixture.profiles[0], password: "synthetic-only", rememberPassword: false)
+    let b = try app.connect(profile: fixture.profiles[1], password: "synthetic-only", rememberPassword: false)
+    try await waitUntil { a.terminalReady && b.terminalReady }
+    app.setLayout(.dual)
+    let hosting = NSHostingView(rootView: WorkspaceView(app: app))
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800), styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false; window.contentView = hosting
+    defer { window.close() }
+    try await Task.sleep(for: .milliseconds(120)); hosting.layoutSubtreeIfNeeded()
+    #expect(window.makeFirstResponder(a.terminal.view))
+    try await waitUntil { app.selectedSession === a }
+    #expect(app.workspace.slots[app.workspace.activeSlot] == a.id)
+    app.selectedSessionID = b.id
+    let click = try #require(NSEvent.mouseEvent(with: .leftMouseDown, location: NSPoint(x: 50, y: 80), modifierFlags: [],
+        timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+    a.terminal.view.mouseDown(with: click)
+    #expect(app.selectedSession === a)
+    #expect(window.makeFirstResponder(b.terminal.view))
+    try await waitUntil { app.selectedSession === b }
+    #expect(app.workspace.slots[app.workspace.activeSlot] == b.id)
+    app.selectedSession?.disconnect()
+    try await waitUntil { !b.connected && !b.disconnecting }
+    #expect(a.connected && !b.connected)
+    await app.shutdown()
+}
