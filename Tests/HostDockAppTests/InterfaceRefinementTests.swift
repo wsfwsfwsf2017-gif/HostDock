@@ -5,29 +5,37 @@ import SwiftUI
 import Testing
 @testable import HostDock
 
-@Test func serverSubtitlesMatchWholeAddressesWithoutChangingStoredIdentity() throws {
+@Test func serverSubtitlesAlwaysShowTargetAddressAndAccountWithoutChangingStoredIdentity() throws {
     let cases = [
-        ("192.0.2.1", "公司服务器 · 192.0.2.1", true),
-        ("192.0.2.1", "服务器 192.0.2.10", false),
-        ("192.0.2.1", "服务器 192.0.2.1:2222", true),
-        ("node.example", "开发 NODE.EXAMPLE", true),
-        ("node.example", "开发 other-node.example", false),
-        ("node.example", "开发 node.example.org", false),
-        ("2001:db8::1", "服务器 [2001:DB8::1]", true),
-        ("2001:db8::1", "服务器 2001:db8::1:22", false),
-        ("192.0.2.1", "很长的服务器名称，不包含地址", false)
+        ("192.0.2.1", "公司服务器 · 192.0.2.1"),
+        ("192.0.2.1", "服务器 192.0.2.10"),
+        ("192.0.2.1", "服务器 192.0.2.1:2222"),
+        ("node.example", "开发 NODE.EXAMPLE"),
+        ("node.example", "开发 other-node.example"),
+        ("node.example", "开发 node.example.org"),
+        ("2001:db8::1", "服务器 [2001:DB8::1]"),
+        ("2001:db8::1", "服务器 2001:db8::1:22"),
+        ("192.0.2.1", "很长的服务器名称，不包含地址")
     ]
     let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-    for (host, name, included) in cases {
+    for (host, name) in cases {
         let profile = ConnectionProfile(name: name, endpoint: ConnectionEndpoint(host: host, port: 22, username: "tester"))
         let original = try encoder.encode(profile); let account = profile.credentialAccount
-        #expect(profile.displaySubtitle == (included ? "tester" : host + " · tester"))
+        #expect(profile.displaySubtitle == host + " · tester")
         #expect(profile.displayAddress == host + " · tester")
+        let recent = RecentConnection(name: name, endpoint: profile.endpoint, lastConnected: Date())
+        #expect(recent.draft().name == name && recent.draft().displaySubtitle == profile.displayAddress)
+        #expect(profile.name == name)
         #expect(try encoder.encode(profile) == original && profile.credentialAccount == account)
     }
     let jump = ConnectionProfile(name: "公司服务器 · 192.0.2.123", endpoint: ConnectionEndpoint(host: "gateway.example", port: 2222, username: "张三@ssta@192.0.2.123"),
         connectionMode: .jumpServer, jumpServer: JumpServerConfiguration(username: "张三", targetUsername: "ssta", targetHost: "192.0.2.123"))
-    #expect(jump.displaySubtitle == "ssta" && jump.endpoint.host == "gateway.example")
+    let original = try encoder.encode(jump); let account = jump.credentialAccount
+    #expect(jump.displaySubtitle == "192.0.2.123 · ssta")
+    let recent = RecentConnection(name: jump.name, endpoint: jump.endpoint, lastConnected: Date(), connectionMode: jump.connectionMode, jumpServer: jump.jumpServer)
+    #expect(recent.draft().name == jump.name && recent.draft().displaySubtitle == jump.displayAddress)
+    #expect(jump.endpoint.host == "gateway.example" && jump.endpoint.username == "张三@ssta@192.0.2.123")
+    #expect(try encoder.encode(jump) == original && jump.credentialAccount == account)
 }
 
 @Test func simplifiedAccessAddressKeepsIndependentGatewayPortAndCredentials() throws {
