@@ -149,6 +149,7 @@ final class AutomationRecord: ObservableObject, Identifiable {
     nonisolated let id: UUID
     @Published var header: AutomationRecordHeader
     @Published var loading = false
+    @Published var showingTerminal = false
     @Published var notice: String?
     @Published private(set) var revision = 0
     private(set) var events: [AutomationRecordEvent] = []

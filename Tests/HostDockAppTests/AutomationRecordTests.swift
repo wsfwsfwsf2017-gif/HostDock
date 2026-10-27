@@ -97,6 +97,7 @@ func recordController(_ fixture: SessionFixture, transports: [FakeSessionConnect
     try await waitUntil { record.loaded && !record.loading }
     #expect(app.recordTabs.count == 1 && app.workspaceTabIDs == [human.id, record.id] && !session.terminalRunning)
     #expect(record.id != session.id && app.selectedSession == nil && app.selectedRecord === record)
+    record.showingTerminal = true
     app.setLayout(.quad)
     #expect(Set(app.workspace.slots.compactMap { $0 }) == Set([human.id, record.id]))
     #expect(await controller.handle(ControlRequest(command: "terminal.send", arguments: ["session": session.id.uuidString, "text": "only agent"])).ok)
@@ -124,6 +125,7 @@ func recordController(_ fixture: SessionFixture, transports: [FakeSessionConnect
     app.removeFromSplit(slot)
     #expect(record.loaded && session.connected)
     app.selectTab(record.id); app.setLayout(.dual); app.setLayout(.single)
+    #expect(record.showingTerminal)
     app.closeRecord(record.id)
     #expect(session.connected && app.recordTabs.isEmpty && !record.loaded)
     app.showRecord(record)

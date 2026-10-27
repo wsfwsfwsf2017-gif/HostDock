@@ -6,7 +6,6 @@ struct AutomationRecordView: View {
     @ObservedObject var app: AppModel
     @ObservedObject var record: AutomationRecord
     @ObservedObject private var automation: AutomationController
-    @ViewState private var terminal = false
     init(app: AppModel, record: AutomationRecord) { self.app = app; self.record = record; automation = app.automation }
     private var session: SessionModel? { app.backgroundSessions.first { $0.id == record.header.sessionID } }
     var body: some View {
@@ -26,7 +25,7 @@ struct AutomationRecordView: View {
             }.padding(12)
             Divider()
             HStack {
-                DockTabs(options: [(false, "操作记录"), (true, "终端")], selection: $terminal).frame(width: 210)
+                DockTabs(options: [(false, "操作记录"), (true, "终端")], selection: $record.showingTerminal).frame(width: 210)
                 Spacer()
                 Text(record.active ? "后台运行中" : record.header.endReason ?? "已结束")
                     .font(.system(size: 11)).foregroundStyle(DockTheme.secondary).lineLimit(1)
@@ -35,9 +34,9 @@ struct AutomationRecordView: View {
             Divider()
             if record.loading {
                 ProgressView("读取记录…").frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if terminal {
+            } else if record.showingTerminal {
                 if record.hasTerminal { TerminalSurface(controller: record.terminal()).padding(8) }
-                else { ContentUnavailableView("未使用交互终端", systemImage: "terminal", description: Text("命令结果可在「操作记录」中查看")) }
+                else { ContentUnavailableView("暂无交互终端输出", systemImage: "terminal", description: Text("命令结果可在「操作记录」中查看")) }
             } else {
                 AutomationRecordText(text: operationText)
             }
