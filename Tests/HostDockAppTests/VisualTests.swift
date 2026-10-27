@@ -181,20 +181,20 @@ func renderTabbedSplitWorkspaceAndBackgroundPanel() async throws {
     for index in 0..<6 { await connections[index].emit("tester@demo-\(index + 1):~$ pwd\r\n/home/tester\r\ntester@demo-\(index + 1):~$ ") }
     for dark in [false, true] {
         app.setLayout(.single)
-        try await renderView(WorkspaceView(app: app), name: "build18-single-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 1440, height: 900))
+        try await renderView(WorkspaceView(app: app), name: "build19-single-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 1440, height: 900))
         app.setLayout(.dual)
-        try await renderView(WorkspaceView(app: app), name: "build18-dual-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 1440, height: 900))
+        try await renderView(WorkspaceView(app: app), name: "build19-dual-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 1440, height: 900))
         app.setLayout(.quad)
-        try await renderView(WorkspaceView(app: app), name: "build18-quad-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 1440, height: 900))
-        try await renderView(WorkspaceView(app: app), name: "build18-quad-compact-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 1000, height: 620))
+        try await renderView(WorkspaceView(app: app), name: "build19-quad-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 1440, height: 900))
+        try await renderView(WorkspaceView(app: app), name: "build19-quad-compact-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 1000, height: 620))
         app.workspace.expandedSessionID = app.selectedSessionID
-        try await renderView(WorkspaceView(app: app), name: "build18-expanded-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 1440, height: 900))
+        try await renderView(WorkspaceView(app: app), name: "build19-expanded-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 1440, height: 900))
         app.workspace.expandedSessionID = nil
         app.showConnections()
-        try await renderView(ConnectionPickerView(app: app), name: "build18-new-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 780, height: 670))
+        try await renderView(ConnectionPickerView(app: app), name: "build19-new-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 780, height: 670))
         app.connectionPickerPresented = false
     }
-    let suite = "HostDock-visual18-" + UUID().uuidString
+    let suite = "HostDock-visual19-" + UUID().uuidString
     let preferences = try #require(UserDefaults(suiteName: suite))
     let socket = FileManager.default.temporaryDirectory.appendingPathComponent("hdv-" + UUID().uuidString.prefix(8)).appendingPathComponent("control.sock")
     defer { preferences.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: socket.deletingLastPathComponent()) }
@@ -204,8 +204,8 @@ func renderTabbedSplitWorkspaceAndBackgroundPanel() async throws {
     let background = try app.connectBackground(profile: app.sessions[0].profile)
     try await waitUntil { background.hostTrustRequest != nil }
     for dark in [false, true] {
-        try await renderView(AutomationBackgroundView(app: app, controller: controller), name: "build18-background-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 460, height: 500))
-        try await renderView(AutomationSettingsView(controller: controller), name: "build18-settings-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 560, height: 190))
+        try await renderView(AutomationBackgroundView(app: app, controller: controller), name: "build19-background-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 460, height: 500))
+        try await renderView(AutomationSettingsView(controller: controller), name: "build19-settings-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 560, height: 190))
     }
     await controller.setEnabled(false); await app.shutdown()
 }

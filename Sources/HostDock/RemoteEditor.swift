@@ -158,28 +158,45 @@ final class RemoteEditors: ObservableObject {
     static let shared = RemoteEditors()
     @Published var focused: RemoteDocument?
     private var windows: [String: RemoteEditorWindow] = [:]
+    private var opening: Set<String> = []
+    private var closingSessions: Set<UUID> = []
+    private let drafts: EditDraftStore
+    init(drafts: EditDraftStore = EditDraftStore()) { self.drafts = drafts }
     var hasUnuploadedEdits: Bool { windows.values.contains { $0.model.isDirty || $0.model.saving } }
     func hasUnuploadedEdits(in session: SessionModel) -> Bool {
         windows.values.contains { $0.model.session === session && ($0.model.isDirty || $0.model.saving) }
     }
-    func closeEditors(in session: SessionModel) throws {
-        let owned = windows.values.filter { $0.model.session === session }
+    func closeEditors(in sessions: [SessionModel]) throws {
+        let ids = Set(sessions.map(\.id))
+        let owned = windows.values.filter { ids.contains($0.model.session.id) }
+        closingSessions.formUnion(ids)
         do { for window in owned { window.model.isClosing = true; try window.model.persistDraft() } }
-        catch { for window in owned { window.model.isClosing = false }; throw error }
+        catch {
+            closingSessions.subtract(ids)
+            for window in owned { window.model.isClosing = false }
+            throw error
+        }
         for window in owned { window.forceClose() }
     }
+    func finishClosing(_ sessions: [SessionModel]) { closingSessions.subtract(sessions.map(\.id)) }
     func open(_ entry: FileEntry, session: SessionModel) async throws {
+        guard session.connected, !session.disconnecting, !closingSessions.contains(session.id) else { throw HostDockError("原会话正在关闭或已断开。") }
         let key = RemoteDocument.key(identity: session.verifiedRemoteIdentity, path: entry.path)
+        guard opening.insert(key).inserted else { return }
+        defer { opening.remove(key) }
         if let existing = windows[key], existing.model.session === session {
             existing.showWindow(nil); existing.window?.makeKeyAndOrderFront(nil); return
         }
         if let old = windows[key] { try old.model.persistDraft(); old.forceClose() }
         guard let store = session.remote.store else { throw HostDockError("服务器目录不可用。") }
         let identity = session.verifiedRemoteIdentity
+        let generation = session.connectionGeneration
         let data = try await FileOperations.read(at: entry.path, in: store, limit: RemoteDocument.sizeLimit)
-        guard session.connected, session.verifiedRemoteIdentity == identity else { throw HostDockError("原会话已断开。") }
-        let document = try RemoteDocument(session: session, path: entry.path, contents: data)
-        let controller = RemoteEditorWindow(model: document)
+        guard session.connected, !session.disconnecting, session.connectionGeneration == generation,
+              session.verifiedRemoteIdentity == identity, !closingSessions.contains(session.id) else { throw HostDockError("原会话已断开或正在关闭。") }
+        if let existing = windows[key] { existing.showWindow(nil); existing.window?.makeKeyAndOrderFront(nil); return }
+        let document = try RemoteDocument(session: session, path: entry.path, contents: data, drafts: drafts)
+        let controller = RemoteEditorWindow(model: document, owner: self)
         windows[key] = controller
         document.onPathChanged = { [weak self] before, after in
             if let value = self?.windows.removeValue(forKey: before) { self?.windows[after] = value }
@@ -187,7 +204,10 @@ final class RemoteEditors: ObservableObject {
         controller.showWindow(nil); controller.window?.makeKeyAndOrderFront(nil)
     }
     func contains(identity: String, path: String) -> Bool { windows[RemoteDocument.key(identity: identity, path: path)] != nil }
-    func remove(_ document: RemoteDocument) { windows.removeValue(forKey: document.key); if focused === document { focused = nil } }
+    func remove(_ document: RemoteDocument) {
+        if windows[document.key]?.model === document { windows.removeValue(forKey: document.key) }
+        if focused === document { focused = nil }
+    }
     func persistDraftsForQuit() throws {
         do {
             for controller in windows.values { controller.model.isClosing = true; try controller.model.persistDraft() }
@@ -199,11 +219,12 @@ final class RemoteEditors: ObservableObject {
 @MainActor
 private final class RemoteEditorWindow: NSWindowController, NSWindowDelegate {
     let model: RemoteDocument
+    private weak var registry: RemoteEditors?
     private var forced = false
     private var askingClose = false
     private var changes: AnyCancellable?
-    init(model: RemoteDocument) {
-        self.model = model
+    init(model: RemoteDocument, owner: RemoteEditors) {
+        self.model = model; self.registry = owner
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 650),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -223,11 +244,11 @@ private final class RemoteEditorWindow: NSWindowController, NSWindowDelegate {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func forceClose() { forced = true; window?.close() }
-    func windowDidBecomeKey(_ notification: Notification) { RemoteEditors.shared.focused = model }
+    func windowDidBecomeKey(_ notification: Notification) { registry?.focused = model }
     func windowDidResignKey(_ notification: Notification) {
-        if RemoteEditors.shared.focused === model { RemoteEditors.shared.focused = nil }
+        if registry?.focused === model { registry?.focused = nil }
     }
-    func windowWillClose(_ notification: Notification) { RemoteEditors.shared.remove(model) }
+    func windowWillClose(_ notification: Notification) { registry?.remove(model) }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if forced || (!model.isDirty && !model.saving) { return true }
         guard !askingClose else { return false }

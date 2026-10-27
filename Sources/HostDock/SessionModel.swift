@@ -40,6 +40,7 @@ final class SessionModel: ObservableObject, Identifiable {
     @Published private(set) var connected = false
     @Published private(set) var disconnecting = false
     @Published var connectionError: String?
+    @Published private(set) var connectionFailure: SSHConnectionFailure?
     @Published private(set) var credentialNotice: String?
     @Published private(set) var passwordRequired = false
     @Published private(set) var hostTrustRequest: HostTrustRequest?
@@ -78,6 +79,10 @@ final class SessionModel: ObservableObject, Identifiable {
     var connectionGeneration: UUID { session }
     var verifiedRemoteIdentity: String { profile.endpoint.identity + ":" + (acceptedFingerprint ?? "") }
     var needsAttention: Bool { hostTrustRequest != nil || conflictRequest != nil || passwordRequired || connectionError != nil }
+    var needsAuthentication: Bool {
+        passwordRequired || connectionFailure == .authentication || connectionFailure == .keyFile
+            || connectionFailure == .keyFormat || connectionFailure == .keyPassphrase
+    }
     var status: String {
         if disconnecting { return "正在断开" }
         if hostTrustRequest != nil { return "确认指纹" }
@@ -112,7 +117,7 @@ final class SessionModel: ObservableObject, Identifiable {
         let endpoint = profile.endpoint
         self.profile = profile
         acceptedFingerprint = nil
-        connectionError = nil; credentialNotice = nil; passwordRequired = false
+        connectionError = nil; connectionFailure = nil; credentialNotice = nil; passwordRequired = false
         connecting = true
         let token = UUID()
         attempt = token
@@ -182,6 +187,7 @@ final class SessionModel: ObservableObject, Identifiable {
                 if attempt == token {
                     finishHostTrust(false)
                     if !Task.isCancelled {
+                        connectionFailure = error as? SSHConnectionFailure
                         passwordRequired = (error as? SSHConnectionFailure) == .keyPassphrase
                         connectionError = error.localizedDescription
                     }

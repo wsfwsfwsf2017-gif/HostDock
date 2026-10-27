@@ -19,6 +19,7 @@ final class AppModel: ObservableObject {
     private let credentials: any CredentialStore
     private let makeConnection: () -> any SessionConnection
     private let preferences: UserDefaults
+    let editors: RemoteEditors
     let reservations = TransferReservations()
     lazy var automation = AutomationController(app: self)
     @Published private(set) var sessions: [SessionModel] = []
@@ -33,6 +34,8 @@ final class AppModel: ObservableObject {
     @Published var pickerEditing = false
     @Published var pickerAuthenticating = false
     @Published var closingSessionID: UUID?
+    @Published var closeAllConfirmationPresented = false
+    @Published private(set) var closingTabs = false
     @Published var workspaceNotice: String?
     @Published var pickerSelection: ConnectionPickerSelection
     @Published var connectionPickerPresented = false {
@@ -56,15 +59,19 @@ final class AppModel: ObservableObject {
     private var pickerCleanupTask: Task<Void, Never>?
     private var credentialRefresh = UUID()
     private var credentialRefreshTask: Task<Void, Never>?
+    private var closeAllSelection: [SessionModel]?
+    private var closeAllTask: Task<Void, Never>?
 
     init(catalog: ConnectionCatalog? = nil, credentials: any CredentialStore = EncryptedFileCredentialStore(),
          preferences: UserDefaults = .standard,
+         editors: RemoteEditors? = nil,
          makeConnection: @escaping () -> any SessionConnection = { LiveSessionConnection() }) {
         let catalog = catalog ?? ConnectionCatalog()
         self.catalog = catalog
         self.credentials = credentials
         self.makeConnection = makeConnection
         self.preferences = preferences
+        self.editors = editors ?? .shared
         pickerSelection = .new
         Task { await refreshSavedConnections() }
     }
@@ -145,7 +152,7 @@ final class AppModel: ObservableObject {
     }
 
     func showConnections() {
-        guard !shuttingDown, !pickerCancelling, !connectionPickerPresented else { return }
+        guard !shuttingDown, !closingTabs, !closeAllConfirmationPresented, !pickerCancelling, !connectionPickerPresented else { return }
         newProfile = ConnectionProfile(name: "", endpoint: ConnectionEndpoint(host: "", port: 22, username: ""))
         newAccessProfile = nil
         pickerReconnectID = nil
@@ -155,18 +162,31 @@ final class AppModel: ObservableObject {
         connectionPickerPresented = true
     }
 
-    func showConnection(_ session: SessionModel) {
-        guard !shuttingDown, !pickerCancelling else { return }
+    func showConnection(_ session: SessionModel, authenticating: Bool = false) {
+        guard !shuttingDown, !closingTabs, !closeAllConfirmationPresented, !pickerCancelling else { return }
         if readyProfileIDs.contains(session.profile.id) { pickerSelection = .saved(session.profile.id) }
         else { useDraft(session.profile) }
         pickerReconnectID = session.id
         pickerEditing = false
-        pickerAuthenticating = false
+        pickerAuthenticating = authenticating
         connectionPickerPresented = true
     }
 
+    func canReconnect(_ session: SessionModel) -> Bool {
+        session.origin == .interactive && sessions.contains(where: { $0 === session }) && !session.connected && !session.busy
+            && !shuttingDown && !closingTabs && !closeAllConfirmationPresented && !updatingRecords && !pickerCancelling && !connectionPickerPresented
+    }
+
+    func reconnect(_ session: SessionModel) {
+        guard canReconnect(session) else { return }
+        do {
+            let profile = catalog.profiles.first { $0.id == session.profile.id } ?? session.profile
+            try connect(profile: profile, password: nil, rememberPassword: profile.rememberPassword, reusing: session)
+        } catch { session.connectionError = error.localizedDescription }
+    }
+
     func showProfile(_ profile: ConnectionProfile, editing: Bool = false, authenticating: Bool = false) {
-        guard !shuttingDown, !pickerBusy else { return }
+        guard !shuttingDown, !closingTabs, !closeAllConfirmationPresented, !pickerBusy else { return }
         if catalog.profiles.contains(where: { $0.id == profile.id }) { pickerSelection = .saved(profile.id) }
         else { useDraft(profile) }
         pickerReconnectID = nil
@@ -210,16 +230,54 @@ final class AppModel: ObservableObject {
     }
 
     func requestCloseTab(_ session: SessionModel) {
-        guard session.origin == .interactive else { return }
-        if session.transferring || RemoteEditors.shared.hasUnuploadedEdits(in: session) { closingSessionID = session.id }
+        guard session.origin == .interactive, !closingTabs, !closeAllConfirmationPresented, !shuttingDown else { return }
+        if session.transferring || editors.hasUnuploadedEdits(in: session) { closingSessionID = session.id }
         else { Task { await closeTab(session) } }
     }
 
     func closeTab(_ session: SessionModel) async {
-        do { try RemoteEditors.shared.closeEditors(in: session) }
+        guard !closingTabs else { return }
+        defer { editors.finishClosing([session]) }
+        do { try editors.closeEditors(in: [session]) }
         catch { workspaceNotice = "草稿未能保存，会话已保留：" + error.localizedDescription; closingSessionID = nil; return }
         await closeSession(session)
         closingSessionID = nil
+    }
+
+    var canCloseAllTabs: Bool { !sessions.isEmpty && !closingTabs && !shuttingDown && !connectionPickerPresented && !pickerCancelling && closingSessionID == nil }
+
+    func requestCloseAllTabs() {
+        guard canCloseAllTabs, !closeAllConfirmationPresented else { return }
+        let targets = sessions
+        if targets.contains(where: { $0.transferring || editors.hasUnuploadedEdits(in: $0) }) {
+            closeAllSelection = targets
+            closeAllConfirmationPresented = true
+        } else { _ = startClosingTabs(targets) }
+    }
+
+    func cancelCloseAllTabs() { closeAllSelection = nil; closeAllConfirmationPresented = false }
+
+    func closeAllTabs() async {
+        if let closeAllTask { await closeAllTask.value; return }
+        guard canCloseAllTabs else { return }
+        let targets = closeAllSelection ?? sessions
+        closeAllSelection = nil; closeAllConfirmationPresented = false
+        await startClosingTabs(targets).value
+    }
+
+    private func startClosingTabs(_ targets: [SessionModel]) -> Task<Void, Never> {
+        closeAllSelection = nil; closeAllConfirmationPresented = false
+        closingTabs = true
+        let task = Task { @MainActor [self] in
+            defer { editors.finishClosing(targets); closingTabs = false; closeAllTask = nil }
+            do { try editors.closeEditors(in: targets) }
+            catch { workspaceNotice = "草稿未能保存，关闭全部已取消：" + error.localizedDescription; return }
+            await withTaskGroup(of: Void.self) { group in
+                for session in targets { group.addTask { await self.closeSession(session) } }
+            }
+        }
+        closeAllTask = task
+        return task
     }
 
     @discardableResult
@@ -285,7 +343,7 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func connect(profile requested: ConnectionProfile, password: String?, rememberPassword: Bool, accessProfile: JumpServerAccessProfile? = nil, reusing previous: SessionModel? = nil) throws -> SessionModel {
-        guard !shuttingDown, !updatingRecords, !pickerCancelling else { throw HostDockError("正在处理连接，请稍后重试。") }
+        guard !shuttingDown, !closingTabs, !closeAllConfirmationPresented, !updatingRecords, !pickerCancelling else { throw HostDockError("正在处理连接，请稍后重试。") }
         if let previous {
             guard sessions.contains(where: { $0 === previous }) else { throw HostDockError("原会话已关闭，请重新打开连接。") }
             if previous.connected || previous.busy { selectTab(previous.id); return previous }
@@ -302,7 +360,7 @@ final class AppModel: ObservableObject {
             session = SessionModel(profile: profile, catalog: catalog, credentials: credentials,
                                    connection: makeConnection(), reservations: reservations)
             session.terminal.view.onFocus = { [weak self, weak session] in
-                guard let self, let session, !self.shuttingDown, self.selectedSessionID != session.id,
+                guard let self, let session, !self.shuttingDown, !self.closingTabs, self.selectedSessionID != session.id,
                       let index = self.workspace.slots.prefix(self.workspace.layout.rawValue).firstIndex(of: session.id),
                       self.workspace.expandedSessionID == nil || self.workspace.expandedSessionID == session.id else { return }
                 self.focusPane(index)
@@ -326,7 +384,8 @@ final class AppModel: ObservableObject {
             sessions.append(session)
             observations[session.id] = session.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         }
-        selectTab(session.id)
+        if previous != nil, let index = workspace.slots.prefix(workspace.layout.rawValue).firstIndex(of: session.id) { focusPane(index) }
+        else { selectTab(session.id) }
         session.connect(profile: profile, password: password, rememberPassword: rememberPassword, accessProfile: resolved.access)
         return session
     }
@@ -437,6 +496,7 @@ final class AppModel: ObservableObject {
     func shutdown() async {
         guard !shuttingDown else { return }
         shuttingDown = true
+        await closeAllTask?.value
         await automation.shutdown()
         accessValidationSession?.cancelConnection()
         await accessValidationSession?.shutdown()

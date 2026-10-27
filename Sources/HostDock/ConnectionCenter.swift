@@ -97,20 +97,31 @@ struct SessionPanel: View {
                         Button("取消", action: session.cancelTransfer)
                     }.font(.caption).padding(8) }
                 }
-            } else { ContentView(app: session, showConnections: { app.showConnection(session) }).id(session.id) }
+            } else { ContentView(app: session, showConnections: { app.reconnect(session) }).id(session.id) }
         } else {
             ScrollView {
                 VStack(spacing: 18) {
                     Image(systemName: "server.rack").font(.system(size: 32, weight: .light)).foregroundStyle(DockTheme.accent)
                     Text(session.profile.name).font(.system(size: 20, weight: .semibold)).lineLimit(1).help(session.profile.name)
                     Text(session.profile.displaySubtitle).font(.system(size: 12, design: .monospaced)).foregroundStyle(DockTheme.secondary)
-                    if let request = session.hostTrustRequest { HostTrustCard(request: request, trust: session.trustHost) }
+                    if let request = session.hostTrustRequest {
+                        HostTrustCard(request: request, trust: session.trustHost)
+                        Button("取消连接", action: session.cancelConnection).buttonStyle(DockButtonStyle())
+                    }
                     else {
                         if session.busy { ProgressView().controlSize(.small) }
                         Text(session.connectionError ?? session.status).font(.system(size: 13)).foregroundStyle(DockTheme.secondary).textSelection(.enabled)
                         if session.connecting { Button("取消连接", action: session.cancelConnection).buttonStyle(DockButtonStyle()) }
-                        else { Button("重新连接") { app.showConnection(session) }.buttonStyle(DockButtonStyle(prominent: true))
-                            .disabled(session.busy || app.pickerCancelling || app.shuttingDown) }
+                        else {
+                            HStack(spacing: 12) {
+                                Button("重新连接") { app.reconnect(session) }.buttonStyle(DockButtonStyle(prominent: true))
+                                    .disabled(!app.canReconnect(session))
+                                if session.needsAuthentication {
+                                    Button("修改认证…") { app.showConnection(session, authenticating: true) }
+                                        .buttonStyle(DockButtonStyle()).disabled(session.busy || app.closingTabs || app.shuttingDown)
+                                }
+                            }
+                        }
                     }
                 }.padding(28).frame(maxWidth: .infinity)
             }.frame(maxWidth: .infinity, maxHeight: .infinity)

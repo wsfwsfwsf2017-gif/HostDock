@@ -19,7 +19,8 @@ actor TestGate {
 struct GatedFileStore: FileStore {
     let base: any FileStore
     let gate: TestGate
-    init(base: any FileStore = LocalFileStore(), gate: TestGate) { self.base = base; self.gate = gate }
+    let readGate: TestGate?
+    init(base: any FileStore = LocalFileStore(), gate: TestGate, readGate: TestGate? = nil) { self.base = base; self.gate = gate; self.readGate = readGate }
     func canonicalDirectory(at path: String) async throws -> String { try await base.canonicalDirectory(at: path) }
     func list(at path: String) async throws -> [FileEntry] { try await base.list(at: path) }
     func metadata(at path: String) async throws -> FileEntry? { try await base.metadata(at: path) }
@@ -28,10 +29,21 @@ struct GatedFileStore: FileStore {
     func removeFile(at path: String) async throws { try await base.removeFile(at: path) }
     func removeEmptyDirectory(at path: String) async throws { try await base.removeEmptyDirectory(at: path) }
     func setPermissions(_ permissions: UInt32, at path: String) async throws { try await base.setPermissions(permissions, at: path) }
-    func openReader(at path: String) async throws -> any FileReader { try await base.openReader(at: path) }
+    func openReader(at path: String) async throws -> any FileReader {
+        let reader = try await base.openReader(at: path)
+        if let readGate { return GatedReader(base: reader, gate: readGate) }
+        return reader
+    }
     func createWriter(at path: String) async throws -> any FileWriter {
         GatedWriter(base: try await base.createWriter(at: path), gate: gate)
     }
+}
+
+private struct GatedReader: FileReader {
+    let base: any FileReader
+    let gate: TestGate
+    func read(upToCount count: Int) async throws -> Data { try await gate.wait(); return try await base.read(upToCount: count) }
+    func close() async throws { try await base.close() }
 }
 
 private struct GatedWriter: FileWriter {
@@ -50,7 +62,8 @@ actor FakeSessionConnection: SessionConnection {
     private(set) var usernames: [String] = []
     private(set) var endpoints: [ConnectionEndpoint] = []
     private(set) var authenticationSecrets: [String?] = []
-    let failure: SSHConnectionFailure?
+    private(set) var failure: SSHConnectionFailure?
+    func configureFailure(_ failure: SSHConnectionFailure?) { self.failure = failure }
     private(set) var connected = false
     private(set) var inputs: [Data] = []
     private(set) var sizes: [(Int, Int)] = []
@@ -134,10 +147,10 @@ struct SessionFixture {
     }
     func remote(_ index: Int) -> String { profiles[index].remoteStartDirectory! }
     func clean() { try? FileManager.default.removeItem(at: root) }
-    func app(transports: [FakeSessionConnection], storage: MemoryConnectionStorage? = nil, credentials: any CredentialStore = MemoryCredentialStore()) -> AppModel {
+    func app(transports: [FakeSessionConnection], storage: MemoryConnectionStorage? = nil, credentials: any CredentialStore = MemoryCredentialStore(), editors: RemoteEditors? = nil) -> AppModel {
         var index = 0
         return AppModel(catalog: ConnectionCatalog(storage: storage ?? MemoryConnectionStorage(ConnectionDocument(profiles: profiles))),
-                        credentials: credentials, makeConnection: {
+                        credentials: credentials, editors: editors, makeConnection: {
                             guard index < transports.count else {
                                 Issue.record("测试没有配置所需的连接替身")
                                 return FakeSessionConnection(home: remote(0), failure: .network)

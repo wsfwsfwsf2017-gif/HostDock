@@ -33,6 +33,7 @@ private struct HostDockCommands: Commands {
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             Button("新建连接…", action: model.showConnections).keyboardShortcut("k", modifiers: .command)
+                .disabled(model.closingTabs || model.closeAllConfirmationPresented || model.shuttingDown)
         }
         CommandGroup(replacing: .saveItem) {
             Button("保存") { if let document = editors.focused { Task { await document.save() } } }
@@ -46,8 +47,11 @@ private struct HostDockCommands: Commands {
             }.keyboardShortcut("f", modifiers: .command).disabled(editors.focused == nil)
         }
         CommandMenu("连接") {
+            Button("重新连接当前标签") { if let session = model.selectedSession { model.reconnect(session) } }
+                .disabled(model.selectedSession.map { !model.canReconnect($0) } ?? true)
             Button("关闭当前标签") { if let session = model.selectedSession { model.requestCloseTab(session) } }
-                .keyboardShortcut("w", modifiers: [.command, .shift]).disabled(model.selectedSession == nil)
+                .keyboardShortcut("w", modifiers: [.command, .shift]).disabled(model.selectedSession == nil || model.closingTabs || model.closeAllConfirmationPresented)
+            Button("关闭所有标签", action: model.requestCloseAllTabs).disabled(!model.canCloseAllTabs)
             Button("断开当前连接，保留会话") { model.selectedSession?.disconnect() }
                 .disabled(model.selectedSession?.connected != true || model.selectedSession?.disconnecting == true)
             Divider()

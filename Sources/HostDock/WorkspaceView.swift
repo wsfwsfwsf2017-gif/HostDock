@@ -5,7 +5,7 @@ import SwiftUI
 @MainActor
 func focusWorkspaceSession(_ app: AppModel, id: UUID) {
     func focus() -> Bool {
-        guard !app.connectionPickerPresented, app.selectedSessionID == id, let session = app.selectedSession, session.connected,
+        guard !app.connectionPickerPresented, !app.closingTabs, app.selectedSessionID == id, let session = app.selectedSession, session.connected,
               app.workspace.slots.prefix(app.workspace.layout.rawValue).contains(id),
               app.workspace.expandedSessionID == nil || app.workspace.expandedSessionID == id,
               let window = session.terminal.view.window else { return false }
@@ -46,6 +46,7 @@ struct WorkspaceView: View {
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(DockTheme.background).foregroundStyle(DockTheme.text).tint(DockTheme.accent)
+        .disabled(app.closingTabs || app.shuttingDown)
         .sheet(isPresented: Binding(get: { windowReady && app.connectionPickerPresented }, set: { app.connectionPickerPresented = $0 })) {
             ConnectionPickerView(app: app)
         }
@@ -53,6 +54,12 @@ struct WorkspaceView: View {
             if let session = app.sessions.first(where: { $0.id == app.closingSessionID }) {
                 Button("保留草稿并关闭“\(session.profile.name)”", role: .destructive) { Task { await app.closeTab(session) } }
             }
+        }
+        .confirmationDialog("关闭所有人工标签？", isPresented: $app.closeAllConfirmationPresented) {
+            Button("取消", role: .cancel, action: app.cancelCloseAllTabs)
+            Button("保留草稿并关闭全部", role: .destructive) { Task { await app.closeAllTabs() } }
+        } message: {
+            Text("未上传的编辑将保留为本机草稿，传输将取消并清理临时文件，已完成项目保留。AI 后台连接继续运行。")
         }
         .onChange(of: visibleIDs, initial: true) { _, ids in
             for session in app.sessions { session.setVisible(ids.contains(session.id)) }
@@ -173,15 +180,23 @@ private struct WorkspaceTabs: View {
     @ObservedObject var app: AppModel
     var body: some View {
         HStack(spacing: 10) {
-            ScrollView(.horizontal) {
-                HStack(spacing: 4) {
-                    ForEach(app.sessions) { session in
-                        ConnectionTab(app: app, session: session)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal) {
+                    HStack(spacing: 4) {
+                        ForEach(app.sessions) { session in
+                            ConnectionTab(app: app, session: session).id(session.id)
+                        }
+                    }.padding(.horizontal, 8)
+                }.scrollIndicators(.hidden)
+                    .onChange(of: app.selectedSessionID, initial: true) { _, id in
+                        if let id { proxy.scrollTo(id, anchor: .trailing) }
                     }
-                }.padding(.horizontal, 8)
-            }.scrollIndicators(.hidden).frame(maxWidth: .infinity)
+            }.frame(maxWidth: .infinity)
             DockTabs(options: WorkspaceLayout.allCases.map { ($0, $0.title) }, selection: Binding(get: { app.workspace.layout }, set: app.setLayout))
                 .frame(width: 186).accessibilityLabel("工作区布局").disabled(app.sessions.isEmpty)
+            Button(app.closingTabs ? "关闭中…" : "关闭全部", action: app.requestCloseAllTabs)
+                .buttonStyle(DockButtonStyle()).disabled(!app.canCloseAllTabs)
+                .help("关闭所有人工标签并断开对应连接，AI 后台不受影响")
             AutomationBackgroundButton(app: app).padding(.trailing, 12)
         }.frame(height: 60).background(DockTheme.surface)
     }
@@ -215,8 +230,11 @@ private struct ConnectionTab: View {
         .help(session.profile.name + "\n" + session.profile.displaySubtitle + "\n" + session.status)
         .contextMenu {
             Button("断开连接，保留标签", action: session.disconnect).disabled(!session.connected || session.disconnecting)
-            Button("重新连接…") { app.showConnection(session) }.disabled(session.busy || session.connected)
+            Button("重新连接") { app.reconnect(session) }.disabled(!app.canReconnect(session))
+            Button("修改认证…") { app.showConnection(session, authenticating: true) }.disabled(session.busy || session.connected)
             Button("关闭会话并断开") { app.requestCloseTab(session) }
+            Divider()
+            Button("关闭所有标签", action: app.requestCloseAllTabs).disabled(!app.canCloseAllTabs)
         }.modifier(DockHoverCursor())
     }
 }
