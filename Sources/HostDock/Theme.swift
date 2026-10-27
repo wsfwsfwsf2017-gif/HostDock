@@ -27,21 +27,9 @@ enum DockTheme {
 
 struct HostDockMark: View {
     var body: some View {
-        GeometryReader { proxy in
-            let w = proxy.size.width
-            let h = proxy.size.height
-            Path { path in
-                path.move(to: CGPoint(x: w * 0.38, y: h * 0.18))
-                path.addLine(to: CGPoint(x: w * 0.22, y: h * 0.18))
-                path.addLine(to: CGPoint(x: w * 0.22, y: h * 0.82))
-                path.addLine(to: CGPoint(x: w * 0.38, y: h * 0.82))
-                path.move(to: CGPoint(x: w * 0.62, y: h * 0.18))
-                path.addLine(to: CGPoint(x: w * 0.78, y: h * 0.18))
-                path.addLine(to: CGPoint(x: w * 0.78, y: h * 0.82))
-                path.addLine(to: CGPoint(x: w * 0.62, y: h * 0.82))
-                path.move(to: CGPoint(x: w * 0.24, y: h * 0.5))
-                path.addLine(to: CGPoint(x: w * 0.76, y: h * 0.5))
-            }.stroke(style: StrokeStyle(lineWidth: w * 0.105, lineCap: .round, lineJoin: .round))
+        if let icon = NSApplication.shared.applicationIconImage {
+            Image(nsImage: icon).renderingMode(.original)
+                .resizable().scaledToFit().accessibilityHidden(true)
         }
     }
 }

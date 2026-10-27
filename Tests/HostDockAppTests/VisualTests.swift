@@ -121,6 +121,11 @@ func renderWorkspaceInBothAppearances() async throws {
 
 @MainActor
 private func renderView<V: View>(_ view: V, name: String, dark: Bool, size: NSSize, emphasizedSelection: Bool = false) async throws {
+    let originalIcon = NSApp.applicationIconImage
+    let iconURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent().appendingPathComponent("packaging/Icon/HostDock.png")
+    NSApp.applicationIconImage = try #require(NSImage(contentsOf: iconURL))
+    defer { NSApp.applicationIconImage = originalIcon }
     let directory = URL(fileURLWithPath: ProcessInfo.processInfo.environment["HOSTDOCK_RENDER_DIR"] ?? FileManager.default.currentDirectoryPath + "/.build/visuals")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)

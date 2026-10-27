@@ -11,7 +11,7 @@ struct ConnectionPickerView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                HostDockMark().frame(width: 25, height: 25).foregroundStyle(DockTheme.accent)
+                HostDockMark().frame(width: 25, height: 25)
                 Text(app.pickerEditing ? "编辑服务器" : app.pickerSelection.tab == .new ? "新建连接" : "连接服务器")
                     .font(.system(size: 18, weight: .semibold))
                 Spacer()

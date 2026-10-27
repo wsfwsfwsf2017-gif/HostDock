@@ -101,7 +101,7 @@ private struct ServerSidebar: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                HostDockMark().frame(width: 25, height: 25).foregroundStyle(DockTheme.accent)
+                HostDockMark().frame(width: 25, height: 25)
                 Text("HostDock").font(.system(size: 16, weight: .semibold))
                 Spacer()
                 Button(action: app.showConnections) { Image(systemName: "plus").frame(width: 16, height: 16) }
