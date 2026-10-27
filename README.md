@@ -4,7 +4,9 @@
 
 HostDock 是一款原生 macOS SSH/SFTP 客户端，集成交互终端、服务器文件管理与本机文件传输，支持普通 SSH 和 JumpServer 接入。
 
-![HostDock 真实运行界面](docs/images/hostdock.png)
+![HostDock 标签与四屏工作区](docs/images/hostdock-workspace.png)
+
+图中服务器、账号和终端内容均为演示数据。
 
 ## 主要功能
 
