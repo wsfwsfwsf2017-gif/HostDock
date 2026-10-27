@@ -210,32 +210,36 @@ private struct ConnectionTab: View {
     var body: some View {
         HStack(spacing: 0) {
             Button { app.selectTab(session.id); focusWorkspaceSession(app, id: session.id) } label: {
-                HStack(spacing: 7) {
-                    Circle().fill(session.needsAttention ? Color.orange : session.connected ? Color.green : DockTheme.secondary).frame(width: 6, height: 6)
-                    Text(app.tabTitle(session)).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                        .frame(maxWidth: 170, alignment: .leading)
-                    if let region, app.workspace.layout != .single {
-                        Text("\(region + 1)").font(.system(size: 10, weight: .semibold, design: .rounded))
-                            .frame(width: 18, height: 18).background(DockTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
-                            .accessibilityLabel("显示在区域 \(region + 1)")
-                    }
-                    if session.transferring { ProgressView(value: session.progress).frame(width: 28) }
-                }.padding(.leading, 12).padding(.trailing, 5).frame(height: 36).contentShape(Rectangle())
+                tabLabel
             }.buttonStyle(.plain)
             Button { app.requestCloseTab(session) } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)).frame(width: 30, height: 36).contentShape(Rectangle()) }
                 .buttonStyle(.plain).help("关闭会话并断开").accessibilityLabel("关闭“\(app.tabTitle(session))”")
         }
         .background(region != nil ? DockTheme.accent.opacity(0.14) : DockTheme.background, in: RoundedRectangle(cornerRadius: 7))
         .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(active ? DockTheme.accent : region != nil ? DockTheme.accent.opacity(0.35) : DockTheme.border, lineWidth: active ? 2 : 1))
-        .help(session.profile.name + "\n" + session.profile.displaySubtitle + "\n" + session.status)
-        .contextMenu {
-            Button("断开连接，保留标签", action: session.disconnect).disabled(!session.connected || session.disconnecting)
-            Button("重新连接") { app.reconnect(session) }.disabled(!app.canReconnect(session))
-            Button("修改认证…") { app.showConnection(session, authenticating: true) }.disabled(session.busy || session.connected)
-            Button("关闭会话并断开") { app.requestCloseTab(session) }
-            Divider()
-            Button("关闭所有标签", action: app.requestCloseAllTabs).disabled(!app.canCloseAllTabs)
-        }.modifier(DockHoverCursor())
+        .help("\(session.profile.name)\n\(session.profile.displaySubtitle)\n\(session.status)")
+        .contextMenu { menuActions }.modifier(DockHoverCursor())
+    }
+    private var tabLabel: some View {
+        HStack(spacing: 7) {
+            Circle().fill(session.needsAttention ? Color.orange : session.connected ? Color.green : DockTheme.secondary).frame(width: 6, height: 6)
+            Text(app.tabTitle(session)).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                .frame(maxWidth: 170, alignment: .leading)
+            if let region, app.workspace.layout != .single {
+                Text("\(region + 1)").font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .frame(width: 18, height: 18).background(DockTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+                    .accessibilityLabel("显示在区域 \(region + 1)")
+            }
+            if session.transferring { ProgressView(value: session.progress).frame(width: 28) }
+        }.padding(.leading, 12).padding(.trailing, 5).frame(height: 36).contentShape(Rectangle())
+    }
+    @ViewBuilder private var menuActions: some View {
+        Button("断开连接，保留标签", action: session.disconnect).disabled(!session.connected || session.disconnecting)
+        Button("重新连接") { app.reconnect(session) }.disabled(!app.canReconnect(session))
+        Button("修改认证…") { app.showConnection(session, authenticating: true) }.disabled(session.busy || session.connected)
+        Button("关闭会话并断开") { app.requestCloseTab(session) }
+        Divider()
+        Button("关闭所有标签", action: app.requestCloseAllTabs).disabled(!app.canCloseAllTabs)
     }
 }
 
