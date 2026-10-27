@@ -70,6 +70,9 @@ final class TerminalController: NSObject, TerminalViewDelegate {
         appearance.performAsCurrentDrawingAppearance {
             view.nativeForegroundColor = DockTheme.textNS.usingColorSpace(.sRGB) ?? DockTheme.textNS
             view.nativeBackgroundColor = DockTheme.surfaceNS.usingColorSpace(.sRGB) ?? DockTheme.surfaceNS
+            view.caretColor = DockTheme.accentNS.usingColorSpace(.sRGB) ?? DockTheme.accentNS
+            view.selectedTextForegroundColor = NSColor.selectedTextColor.usingColorSpace(.sRGB) ?? .selectedTextColor
+            view.selectedTextBackgroundColor = NSColor.selectedTextBackgroundColor.usingColorSpace(.sRGB) ?? .selectedTextBackgroundColor
         }
     }
 

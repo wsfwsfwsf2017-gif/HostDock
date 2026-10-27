@@ -7,12 +7,18 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 @main
 struct HostDockApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @StateObject private var model = AppModel()
+    @StateObject private var model: AppModel
     @ViewState private var windowReady = false
+
+    init() {
+        let model = AppModel()
+        NSApplication.shared.appearance = model.appearance.nsAppearance
+        _model = StateObject(wrappedValue: model)
+    }
 
     var body: some Scene {
         mainWindow
-        Settings { AutomationSettingsView(controller: model.automation) }
+        Settings { AppSettingsView(app: model) }
     }
 
     private var mainWindow: some Scene {

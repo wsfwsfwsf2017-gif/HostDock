@@ -68,8 +68,10 @@ func savedDirectAndJumpProfilesConnectWithReadOnlyCredentials() async throws {
                 if profile.connectionMode == .jumpServer,
                    (try? FilePath.normalize(initial == "~" ? session.remote.home : initial)) == "/",
                    let asset = try await remote.list(at: "/").first(where: { $0.kind == .directory && $0.name == profile.targetHost }) {
-                    #expect(session.remote.path == asset.path && session.remote.pathDraft == asset.path)
-                    print("PASS JumpServer 初始进入目标资产目录，保留真实 SFTP 路径")
+                    let account = try await remote.list(at: asset.path).first { $0.kind == .directory && $0.name == profile.targetUsername }
+                    let expected = account?.path ?? asset.path
+                    #expect(session.remote.path == expected && session.remote.pathDraft == expected)
+                    print("PASS JumpServer 初始进入目标资产及匹配账号目录，保留真实 SFTP 路径")
                 }
                 if round == 0 {
                     try await waitForCompany { await MainActor.run { session.terminalReady } }

@@ -4,6 +4,7 @@ import Testing
 @testable import HostDock
 
 private let assetPath = "/192.0.2.10"
+private let accountPath = assetPath + "/demo"
 
 private actor JumpDirectoryStore: FileStore {
     let directories: [String: [FileEntry]]
@@ -14,10 +15,11 @@ private actor JumpDirectoryStore: FileStore {
     private(set) var listed: [String] = []
 
     init(root: [FileEntry] = [FileEntry(path: assetPath, kind: .directory)],
-         deniedPath: String? = nil, pausePath: String? = nil) {
+         assetEntries: [FileEntry]? = nil, deniedPath: String? = nil, pausePath: String? = nil) {
         directories = ["/": root,
-                       assetPath: [FileEntry(path: assetPath + "/home", kind: .directory), FileEntry(path: assetPath + "/tmp", kind: .directory)],
+                       assetPath: assetEntries ?? [FileEntry(path: assetPath + "/home", kind: .directory), FileEntry(path: assetPath + "/tmp", kind: .directory)],
                        assetPath + "/home": [FileEntry(path: assetPath + "/home/readme.txt", kind: .file)],
+                       accountPath: [FileEntry(path: accountPath + "/etc", kind: .directory), FileEntry(path: accountPath + "/demo", kind: .directory)],
                        "/denied": []]
         self.deniedPath = deniedPath; self.pausePath = pausePath
     }
@@ -151,9 +153,64 @@ struct JumpServerDirectoryTests {
         await app.shutdown()
     }
 
-    @Test func cancelledAssetReadCannotReplaceAReconnectedDirectory() async throws {
+    @Test(arguments: ["exact", "multiple", "missing", "prefix", "symlink", "file", "direct", "explicit"])
+    func onlyEntersTheExactLoginDirectoryAtTheAutomaticAssetEntrance(scenario: String) async throws {
         let fixture = try SessionFixture(); defer { fixture.clean() }
-        let store = JumpDirectoryStore(pausePath: assetPath)
+        var profile = jumpDirectoryProfile(fixture, direct: scenario == "direct")
+        if scenario == "explicit" { profile.remoteStartDirectory = assetPath }
+        let entries: [FileEntry]
+        switch scenario {
+        case "missing": entries = [FileEntry(path: assetPath + "/another-user", kind: .directory)]
+        case "prefix": entries = [FileEntry(path: assetPath + "/demo-admin", kind: .directory)]
+        case "symlink": entries = [FileEntry(path: accountPath, kind: .symbolicLink)]
+        case "file": entries = [FileEntry(path: accountPath, kind: .file)]
+        default: entries = [FileEntry(path: assetPath + "/another-user", kind: .directory), FileEntry(path: accountPath, kind: .directory)]
+        }
+        let store = JumpDirectoryStore(assetEntries: scenario == "exact" ? [FileEntry(path: accountPath, kind: .directory)] : entries)
+        let transport = FakeSessionConnection(home: "/", store: store)
+        let app = fixture.app(transports: [transport], storage: MemoryConnectionStorage(ConnectionDocument(profiles: [profile])))
+        let session = try app.connect(profile: profile, password: "synthetic-only", rememberPassword: true)
+        try await waitUntil { session.terminalReady && !session.connecting }
+        let entersAccount = scenario == "exact" || scenario == "multiple"
+        let expected = entersAccount ? accountPath : scenario == "direct" ? "/" : assetPath
+        #expect(session.remote.path == expected && session.remote.pathDraft == expected && session.remote.directoryReady)
+        #expect(await !store.listed.contains(assetPath + "/another-user"))
+        #expect(await !store.listed.contains(accountPath + "/demo"))
+        if entersAccount {
+            #expect(session.remote.roots.map(\.entry.path) == [accountPath + "/etc", accountPath + "/demo"])
+            session.workspaceMode = .files
+            await session.remote.navigate(to: FilePath.parent(session.remote.path))
+            await session.remote.refresh()
+            #expect(session.remote.path == assetPath)
+            await session.shutdown()
+            app.reconnect(session)
+            try await waitUntil { session.terminalReady && !session.connecting }
+            #expect(session.remote.path == accountPath && app.sessions.count == 1)
+            #expect(await transport.connects == 2)
+        }
+        await app.shutdown()
+    }
+
+    @Test func inaccessibleLoginDirectoryKeepsSSHButDisablesTransfers() async throws {
+        let fixture = try SessionFixture(); defer { fixture.clean() }
+        let store = JumpDirectoryStore(assetEntries: [FileEntry(path: accountPath, kind: .directory)], deniedPath: accountPath)
+        let app = fixture.app(transports: [FakeSessionConnection(home: "/", store: store)])
+        let session = try app.connect(profile: jumpDirectoryProfile(fixture), password: "synthetic-only", rememberPassword: false)
+        try await waitUntil { session.terminalReady && !session.connecting }
+        #expect(session.connected && session.connectionError == nil)
+        #expect(session.remote.path.isEmpty && session.remote.pathDraft == accountPath && !session.remote.directoryReady)
+        #expect(session.remote.error?.contains("无访问权限") == true)
+        session.local.selection = [try #require(session.local.roots.first?.entry.path)]
+        session.transfer(upload: true)
+        #expect(!session.transferring)
+        await app.shutdown()
+    }
+
+    @Test(arguments: [false, true])
+    func cancelledAssetReadCannotReplaceAReconnectedDirectory(account: Bool) async throws {
+        let fixture = try SessionFixture(); defer { fixture.clean() }
+        let store = JumpDirectoryStore(assetEntries: account ? [FileEntry(path: accountPath, kind: .directory)] : nil,
+                                       pausePath: account ? accountPath : assetPath)
         let transport = FakeSessionConnection(home: "/", store: store)
         let app = fixture.app(transports: [transport])
         let profile = jumpDirectoryProfile(fixture)

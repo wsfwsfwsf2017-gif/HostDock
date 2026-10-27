@@ -1,6 +1,33 @@
 import AppKit
 import SwiftUI
 
+enum AppAppearance: String, CaseIterable {
+    case system, light, dark
+    static let preferenceKey = "HostDock.Appearance"
+    var title: String {
+        switch self { case .system: return "跟随系统"; case .light: return "浅色"; case .dark: return "深色" }
+    }
+    var nsAppearance: NSAppearance? {
+        switch self { case .system: return nil; case .light: return NSAppearance(named: .aqua); case .dark: return NSAppearance(named: .darkAqua) }
+    }
+}
+
+struct AppSettingsView: View {
+    @ObservedObject var app: AppModel
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 18) {
+                Label("外观", systemImage: "circle.lefthalf.filled").font(.title2.bold())
+                DockFormField(title: "主题") {
+                    DockTabs(options: AppAppearance.allCases.map { ($0, $0.title) }, selection: $app.appearance)
+                }
+            }.padding(26)
+            Divider()
+            AutomationSettingsView(controller: app.automation)
+        }.frame(width: 560).background(DockTheme.surface).foregroundStyle(DockTheme.text).tint(DockTheme.accent)
+    }
+}
+
 enum DockTheme {
     static func adaptive(_ name: String, light: UInt32, dark: UInt32) -> NSColor {
         NSColor(name: NSColor.Name("HostDock.\(name)")) { appearance in

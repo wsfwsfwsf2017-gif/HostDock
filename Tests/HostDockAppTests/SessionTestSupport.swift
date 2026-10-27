@@ -147,10 +147,10 @@ struct SessionFixture {
     }
     func remote(_ index: Int) -> String { profiles[index].remoteStartDirectory! }
     func clean() { try? FileManager.default.removeItem(at: root) }
-    func app(transports: [FakeSessionConnection], storage: MemoryConnectionStorage? = nil, credentials: any CredentialStore = MemoryCredentialStore(), editors: RemoteEditors? = nil) -> AppModel {
+    func app(transports: [FakeSessionConnection], storage: MemoryConnectionStorage? = nil, credentials: any CredentialStore = MemoryCredentialStore(), editors: RemoteEditors? = nil, preferences: UserDefaults = .standard) -> AppModel {
         var index = 0
         return AppModel(catalog: ConnectionCatalog(storage: storage ?? MemoryConnectionStorage(ConnectionDocument(profiles: profiles))),
-                        credentials: credentials, editors: editors, makeConnection: {
+                        credentials: credentials, preferences: preferences, editors: editors, makeConnection: {
                             guard index < transports.count else {
                                 Issue.record("测试没有配置所需的连接替身")
                                 return FakeSessionConnection(home: remote(0), failure: .network)

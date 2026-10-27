@@ -160,6 +160,11 @@ final class SessionModel: ObservableObject, Identifiable {
                    let asset = remote.roots.first(where: { $0.entry.kind == .directory && $0.entry.name == profile.targetHost }) {
                     await remote.attach(store: result.store, home: result.home, initialDirectory: asset.entry.path)
                     guard attempt == token, !Task.isCancelled else { return }
+                    if remote.error == nil,
+                       let account = remote.roots.first(where: { $0.entry.kind == .directory && $0.entry.name == profile.targetUsername }) {
+                        await remote.attach(store: result.store, home: result.home, initialDirectory: account.entry.path)
+                        guard attempt == token, !Task.isCancelled else { return }
+                    }
                 }
                 do {
                     if origin == .interactive && (rememberPassword || validationOnly) {

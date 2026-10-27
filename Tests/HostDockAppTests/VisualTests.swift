@@ -12,7 +12,7 @@ func renderAutomationSettingsInBothAppearances() async throws {
     defer { fixture.clean() }
     let app = fixture.app(transports: [])
     for dark in [false, true] {
-        try await renderView(AutomationSettingsView(controller: app.automation), name: "build16-settings-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 560, height: 190))
+        try await renderView(AppSettingsView(app: app), name: "build24-settings-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 560, height: 340))
     }
     await app.shutdown()
 }

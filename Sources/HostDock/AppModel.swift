@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 import HostDockCore
@@ -19,6 +20,12 @@ final class AppModel: ObservableObject {
     private let credentials: any CredentialStore
     private let makeConnection: () -> any SessionConnection
     private let preferences: UserDefaults
+    @Published var appearance: AppAppearance {
+        didSet {
+            preferences.set(appearance.rawValue, forKey: AppAppearance.preferenceKey)
+            NSApplication.shared.appearance = appearance.nsAppearance
+        }
+    }
     let editors: RemoteEditors
     let reservations = TransferReservations()
     lazy var automation = AutomationController(app: self)
@@ -71,6 +78,7 @@ final class AppModel: ObservableObject {
         self.credentials = credentials
         self.makeConnection = makeConnection
         self.preferences = preferences
+        appearance = AppAppearance(rawValue: preferences.string(forKey: AppAppearance.preferenceKey) ?? "") ?? .system
         self.editors = editors ?? .shared
         pickerSelection = .new
         Task { await refreshSavedConnections() }
