@@ -156,6 +156,11 @@ final class SessionModel: ObservableObject, Identifiable {
                 guard attempt == token, !Task.isCancelled else { return }
                 await remote.attach(store: result.store, home: result.home, initialDirectory: profile.remoteStartDirectory)
                 guard attempt == token, !Task.isCancelled else { return }
+                if profile.connectionMode == .jumpServer, remote.path == "/", remote.error == nil,
+                   let asset = remote.roots.first(where: { $0.entry.kind == .directory && $0.entry.name == profile.targetHost }) {
+                    await remote.attach(store: result.store, home: result.home, initialDirectory: asset.entry.path)
+                    guard attempt == token, !Task.isCancelled else { return }
+                }
                 do {
                     if origin == .interactive && (rememberPassword || validationOnly) {
                         self.profile = try await persistAuthentication(profile: profile, access: access, secret: secret,
