@@ -55,7 +55,7 @@ struct WorkspaceView: View {
                 Button("保留草稿并关闭“\(session.profile.name)”", role: .destructive) { Task { await app.closeTab(session) } }
             }
         }
-        .confirmationDialog("关闭所有人工标签？", isPresented: $app.closeAllConfirmationPresented) {
+        .confirmationDialog("关闭所有标签？", isPresented: $app.closeAllConfirmationPresented) {
             Button("取消", role: .cancel, action: app.cancelCloseAllTabs)
             Button("保留草稿并关闭全部", role: .destructive) { Task { await app.closeAllTabs() } }
         } message: {
@@ -183,8 +183,12 @@ private struct WorkspaceTabs: View {
             ScrollViewReader { proxy in
                 ScrollView(.horizontal) {
                     HStack(spacing: 4) {
-                        ForEach(app.sessions) { session in
-                            ConnectionTab(app: app, session: session).id(session.id)
+                        ForEach(app.workspaceTabIDs, id: \.self) { id in
+                            if let session = app.sessions.first(where: { $0.id == id }) {
+                                ConnectionTab(app: app, session: session).id(id)
+                            } else if let record = app.recordTabs.first(where: { $0.id == id }) {
+                                AutomationRecordTab(app: app, record: record).id(id)
+                            }
                         }
                     }.padding(.horizontal, 8)
                 }.scrollIndicators(.hidden)
@@ -193,10 +197,10 @@ private struct WorkspaceTabs: View {
                     }
             }.frame(maxWidth: .infinity)
             DockTabs(options: WorkspaceLayout.allCases.map { ($0, $0.title) }, selection: Binding(get: { app.workspace.layout }, set: app.setLayout))
-                .frame(width: 186).accessibilityLabel("工作区布局").disabled(app.sessions.isEmpty)
+                .frame(width: 186).accessibilityLabel("工作区布局").disabled(app.workspaceTabIDs.isEmpty)
             Button(app.closingTabs ? "关闭中…" : "关闭全部", action: app.requestCloseAllTabs)
                 .buttonStyle(DockButtonStyle()).disabled(!app.canCloseAllTabs)
-                .help("关闭所有人工标签并断开对应连接，AI 后台不受影响")
+                .help("关闭人工连接和记录查看标签，AI 后台不受影响")
             AutomationBackgroundButton(app: app).padding(.trailing, 12)
         }.frame(height: 60).background(DockTheme.surface)
     }
@@ -255,6 +259,12 @@ private struct WorkspaceGrid: View {
                         .padding(.horizontal, 12).padding(.vertical, 8)
                     SessionPanel(app: app, session: session).id(session.id)
                 }
+            } else if let expanded = app.workspace.expandedSessionID, let record = app.recordTabs.first(where: { $0.id == expanded }) {
+                VStack(spacing: 0) {
+                    HStack { Button { app.workspace.expandedSessionID = nil } label: { Label("返回分屏", systemImage: "rectangle.split.2x2") }.buttonStyle(DockButtonStyle()); Spacer() }
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                    AutomationRecordView(app: app, record: record).id(record.id)
+                }
             } else if app.workspace.layout == .single { cell(0) }
             else {
                 let width = max(1, geometry.size.width - 7)
@@ -288,13 +298,15 @@ private struct WorkspaceGrid: View {
     }
     private func cell(_ index: Int) -> some View {
         let session = app.sessions.first { $0.id == app.workspace.slots[index] }
-        return WorkspaceCell(app: app, session: session, index: index)
+        let record = app.recordTabs.first { $0.id == app.workspace.slots[index] }
+        return WorkspaceCell(app: app, session: session, record: record, index: index)
     }
 }
 
 private struct WorkspaceCell: View {
     @ObservedObject var app: AppModel
     let session: SessionModel?
+    let record: AutomationRecord?
     let index: Int
     private var active: Bool { app.workspace.activeSlot == index }
     var body: some View {
@@ -305,10 +317,21 @@ private struct WorkspaceCell: View {
                     Rectangle().fill(DockTheme.border).frame(height: 1)
                 }
                 SessionPanel(app: app, session: session, compact: app.workspace.layout != .single).id(session.id)
+            } else if let record {
+                if app.workspace.layout != .single {
+                    HStack {
+                        Label("AI · 只读", systemImage: "eye").font(.system(size: 12))
+                        Spacer()
+                        Button { app.removeFromSplit(index) } label: { Image(systemName: "xmark").frame(width: 32, height: 32) }
+                            .buttonStyle(.plain).help("移出分屏，保留查看标签和 AI 连接")
+                    }.padding(.horizontal, 12).frame(height: 42)
+                    Divider()
+                }
+                AutomationRecordView(app: app, record: record).id(record.id)
             } else {
                 VStack(spacing: 12) {
                     Image(systemName: "server.rack").font(.system(size: 28, weight: .light)).foregroundStyle(DockTheme.accent)
-                    Text(app.sessions.isEmpty ? "选择服务器，开始工作" : active ? "点击服务器或标签，填入此区域" : "点击选择此空位")
+                    Text(app.workspaceTabIDs.isEmpty ? "选择服务器，开始工作" : active ? "点击服务器或标签，填入此区域" : "点击选择此空位")
                         .font(.system(size: 14, weight: .medium))
                     Button("新建连接", action: app.showConnections).buttonStyle(DockButtonStyle())
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)

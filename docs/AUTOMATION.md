@@ -76,10 +76,26 @@ JumpServer 的 SFTP 路径可能经过资产映射。先列出实际路径，不
 
 失败时 `ok: false`，并提供 `error.code` 和可读的 `error.message`。常用错误包括 `DISABLED`、`APP_UNAVAILABLE`、`AUTH_REQUIRED`、`NEEDS_USER_ACTION`、`INVALID_ARGUMENT`、`SESSION_NOT_FOUND`、`SESSION_SCOPE_MISMATCH`、`SESSION_OFFLINE`、`BUSY`、`TIMEOUT`、`CANCELLED`、`OUTPUT_LIMIT`、`EXEC_UNAVAILABLE`、`EXIT_STATUS_UNAVAILABLE`。当退出状态未知时，命令可能已执行，不要自动重试。`result` 和 `error` 为空时会省略。
 
+## 只读记录与服务器保护
+
+在「AI 后台」点击「查看记录」，会打开带「AI · 只读」标识的标签；可与人工标签分屏。操作记录包含命令、stdout、stderr、退出码、文件操作摘要和失败原因；「终端」只回放该后台连接已有的 PTY 输出，不创建或接管终端。查看、复制、滚动、调整窗口和关闭查看均不向后台发送输入或尺寸变化，不结束 AI。连接结束后从「历史记录」重新查看，支持删除单条或清空未打开的已结束记录。
+
+记录从此功能启用后的调用开始，无法补回旧版完整内容，也不包含外部 AI 工具的提问和回答。认证资料不入日志；终端输入正文不单独保存，服务器回显仍可能包含业务敏感内容。记录只写入本机 `~/Library/Application Support/HostDock/AutomationRecords`，目录 700、文件 600，不上传。保留最近 30 天，单条最多 20 MiB、合计最多 200 MiB；优先清理已结束且未打开的旧记录，活跃记录超限时明确标为截断，不中断 AI。损坏或保存失败会提示，原文件保留；退出前等待刷盘，失败可取消退出。
+
+用户点击「结束并保护」后，立即停止同一目标服务器的全部 AI 连接，并从点击时保护 5 分钟。按目标 IP／域名识别，跨账号、端口和保存记录生效；JumpServer 按资产地址识别，其他资产与人工连接继续运行。保护跨重启保留，用户可以在「AI 后台」查看倒计时并「提前解除」。AI 自行断开、关闭查看或删除记录不触发或解除保护。
+
+在途操作、后续连接及旧会话 ID 均返回非零 CLI 状态和以下结构。Agent 必须停止重试并向用户报告；CLI 没有绕过或解除参数。状态查询和结束清理仍可执行。保护文件损坏时返回 `PROTECTION_STATE_UNAVAILABLE`，暂停服务器操作直至用户修复；写入失败时当前进程仍封锁，但会提示重启后的保护未获保证。
+
+```json
+{"version":1,"requestID":"...","ok":false,"error":{"code":"SERVER_PROTECTED","message":"用户已结束连接，请停止调用并报告"},"result":{"host":"192.0.2.10","protectedUntil":"2026-10-27T10:05:00Z","retryable":false}}
+```
+
+保护约束经 HostDock 发起的 AI 操作，不能强制外部 Agent 停止思考，也不能终止已脱离 SSH 会话运行的远端进程。
+
 ## 访问边界
 
 自动化只监听当前用户的 Unix socket：`~/Library/Application Support/HostDock/automation.sock`，目录 700、socket 600，并校验对端用户。不开放 TCP/HTTP 端口。
 
-开启后，同一 Mac 账户下的程序能够通过该接口使用现有服务器认证；请在不需要时关闭。关闭会拒绝新请求、取消全部 AI 操作、清理临时文件并断开所有后台连接；人工 Tab、连接和传输保留。应用退出时关闭两类连接。CLI 不接收密码参数、不导出密码或口令，不上传私钥；命令文本支持标准输入，应用不持久化自动化命令及输出日志。
+开启后，同一 Mac 账户下的程序能够通过该接口使用现有服务器认证；请在不需要时关闭。关闭会拒绝新请求、取消全部 AI 操作、清理临时文件并断开所有后台连接；人工 Tab、连接和传输保留。应用退出时关闭两类连接。CLI 不接收密码参数、不导出密码或口令，不上传私钥；命令文本支持标准输入。
 
 后台隔离由 HostDock 的 CLI／自动化接口强制执行；它不会改变其他程序的 macOS 鼠标键盘权限。Agent 应通过上述命令入口操作服务器。

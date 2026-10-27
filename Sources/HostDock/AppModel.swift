@@ -27,10 +27,14 @@ final class AppModel: ObservableObject {
         }
     }
     let editors: RemoteEditors
+    let automationRecords: AutomationRecords
     let reservations = TransferReservations()
     lazy var automation = AutomationController(app: self)
     @Published private(set) var sessions: [SessionModel] = []
     @Published private(set) var backgroundSessions: [SessionModel] = []
+    @Published private(set) var recordTabs: [AutomationRecord] = []
+    @Published private(set) var workspaceTabIDs: [UUID] = []
+    var selectedRecord: AutomationRecord? { recordTabs.first { $0.id == selectedSessionID } }
     var allSessions: [SessionModel] { sessions + backgroundSessions }
     @Published var workspace = WorkspaceArrangement()
     @Published var selectedSessionID: UUID? {
@@ -72,6 +76,7 @@ final class AppModel: ObservableObject {
     init(catalog: ConnectionCatalog? = nil, credentials: any CredentialStore = EncryptedFileCredentialStore(),
          preferences: UserDefaults = .standard,
          editors: RemoteEditors? = nil,
+         automationRecords: AutomationRecords? = nil,
          makeConnection: @escaping () -> any SessionConnection = { LiveSessionConnection() }) {
         let catalog = catalog ?? ConnectionCatalog()
         self.catalog = catalog
@@ -80,6 +85,7 @@ final class AppModel: ObservableObject {
         self.preferences = preferences
         appearance = AppAppearance(rawValue: preferences.string(forKey: AppAppearance.preferenceKey) ?? "") ?? .system
         self.editors = editors ?? .shared
+        self.automationRecords = automationRecords ?? AutomationRecords()
         pickerSelection = .new
         Task { await refreshSavedConnections() }
     }
@@ -209,12 +215,12 @@ final class AppModel: ObservableObject {
     }
 
     func setLayout(_ layout: WorkspaceLayout) {
-        workspace.setLayout(layout, tabs: sessions.map(\.id))
+        workspace.setLayout(layout, tabs: workspaceTabIDs)
         selectedSessionID = workspace.slots[workspace.activeSlot]
     }
 
     func selectTab(_ id: UUID) {
-        guard sessions.contains(where: { $0.id == id }) else { return }
+        guard workspaceTabIDs.contains(id) else { return }
         workspace.select(id)
         selectedSessionID = id
     }
@@ -237,6 +243,39 @@ final class AppModel: ObservableObject {
         return "\(session.profile.name) · \(index + 1)"
     }
 
+    func showRecord(_ record: AutomationRecord) {
+        guard !closingTabs, !shuttingDown else { return }
+        if !recordTabs.contains(where: { $0.id == record.id }) {
+            recordTabs.append(record); workspaceTabIDs.append(record.id)
+        }
+        selectTab(record.id)
+        NSApp.keyWindow?.makeFirstResponder(nil)
+        Task { [weak self] in
+            guard let self, self.recordTabs.contains(where: { $0.id == record.id }) else { return }
+            await self.automationRecords.open(record)
+        }
+    }
+
+    func closeRecord(_ id: UUID) {
+        recordTabs.removeAll { $0.id == id }
+        automationRecords.closeView(id)
+        removeWorkspaceTab(id)
+    }
+
+    func closeSelectedTab() {
+        if let selectedRecord { closeRecord(selectedRecord.id) }
+        else if let selectedSession { requestCloseTab(selectedSession) }
+    }
+
+    private func removeWorkspaceTab(_ id: UUID) {
+        workspaceTabIDs.removeAll { $0 == id }; workspace.remove(id)
+        if workspaceTabIDs.isEmpty { workspace = WorkspaceArrangement(); selectedSessionID = nil }
+        else if selectedSessionID == id {
+            selectedSessionID = workspace.slots[workspace.activeSlot]
+            if workspace.layout == .single, let next = workspaceTabIDs.first { selectTab(next) }
+        }
+    }
+
     func requestCloseTab(_ session: SessionModel) {
         guard session.origin == .interactive, !closingTabs, !closeAllConfirmationPresented, !shuttingDown else { return }
         if session.transferring || editors.hasUnuploadedEdits(in: session) { closingSessionID = session.id }
@@ -252,7 +291,7 @@ final class AppModel: ObservableObject {
         closingSessionID = nil
     }
 
-    var canCloseAllTabs: Bool { !sessions.isEmpty && !closingTabs && !shuttingDown && !connectionPickerPresented && !pickerCancelling && closingSessionID == nil }
+    var canCloseAllTabs: Bool { !workspaceTabIDs.isEmpty && !closingTabs && !shuttingDown && !connectionPickerPresented && !pickerCancelling && closingSessionID == nil }
 
     func requestCloseAllTabs() {
         guard canCloseAllTabs, !closeAllConfirmationPresented else { return }
@@ -276,10 +315,12 @@ final class AppModel: ObservableObject {
     private func startClosingTabs(_ targets: [SessionModel]) -> Task<Void, Never> {
         closeAllSelection = nil; closeAllConfirmationPresented = false
         closingTabs = true
+        let views = recordTabs.map(\.id)
         let task = Task { @MainActor [self] in
             defer { editors.finishClosing(targets); closingTabs = false; closeAllTask = nil }
             do { try editors.closeEditors(in: targets) }
             catch { workspaceNotice = "草稿未能保存，关闭全部已取消：" + error.localizedDescription; return }
+            for id in views { closeRecord(id) }
             await withTaskGroup(of: Void.self) { group in
                 for session in targets { group.addTask { await self.closeSession(session) } }
             }
@@ -289,12 +330,20 @@ final class AppModel: ObservableObject {
     }
 
     @discardableResult
-    func connectBackground(profile: ConnectionProfile) throws -> SessionModel {
+    func connectBackground(profile: ConnectionProfile, record: AutomationRecord? = nil) throws -> SessionModel {
         guard !shuttingDown, !updatingRecords else { throw HostDockError("应用正在处理连接资料，请稍后重试。") }
         let resolved = try catalog.resolve(profile)
         _ = try catalog.validate(resolved.profile)
         let session = SessionModel(profile: resolved.profile, catalog: catalog, credentials: credentials,
                                    connection: makeConnection(), reservations: reservations, origin: .automation)
+        let record = record ?? automationRecords.begin(profile: resolved.profile)
+        automationRecords.bind(record, sessionID: session.id)
+        session.onTerminalOutput = { [weak history = automationRecords, weak record] data in
+            if let record { history?.emit(record, kind: .terminal, data: data) }
+        }
+        session.onConnectionLost = { [weak history = automationRecords, weak session] in
+            if let session { history?.end(sessionID: session.id, reason: "连接意外断开") }
+        }
         backgroundSessions.append(session)
         observations[session.id] = session.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         session.connect(profile: resolved.profile, password: nil, rememberPassword: true, accessProfile: resolved.access)
@@ -390,6 +439,7 @@ final class AppModel: ObservableObject {
                 if self.selectedSessionID == id { self.maximizeRequest += 1 }
             }
             sessions.append(session)
+            workspaceTabIDs.append(session.id)
             observations[session.id] = session.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         }
         if previous != nil, let index = workspace.slots.prefix(workspace.layout.rawValue).firstIndex(of: session.id) { focusPane(index) }
@@ -485,20 +535,16 @@ final class AppModel: ObservableObject {
         if pickerSelection == .saved(profile.id) { pickerSelection = .saved(catalog.profiles.first?.id) }
     }
 
-    func closeSession(_ session: SessionModel) async {
+    func closeSession(_ session: SessionModel, reason: String = "连接已结束") async {
         await session.shutdown()
+        if session.origin == .automation { automationRecords.end(sessionID: session.id, reason: reason) }
         sessions.removeAll { $0.id == session.id }
         backgroundSessions.removeAll { $0.id == session.id }
         if session.origin == .interactive {
-            workspace.remove(session.id)
-            if sessions.isEmpty { workspace = WorkspaceArrangement() }
+            removeWorkspaceTab(session.id)
         }
         observations.removeValue(forKey: session.id)
         pickerAttempts.removeValue(forKey: session.id)
-        if selectedSessionID == session.id {
-            selectedSessionID = workspace.slots[workspace.activeSlot]
-            if workspace.layout == .single, let next = sessions.first { selectTab(next.id) }
-        }
     }
 
     func shutdown() async {
@@ -514,4 +560,5 @@ final class AppModel: ObservableObject {
             for session in allSessions { group.addTask { await session.shutdown() } }
         }
     }
+    func cancelShutdown() { shuttingDown = false }
 }

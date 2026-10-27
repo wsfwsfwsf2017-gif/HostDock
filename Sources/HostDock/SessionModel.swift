@@ -26,6 +26,8 @@ final class SessionModel: ObservableObject, Identifiable {
     let origin: SessionOrigin
     @Published private(set) var profile: ConnectionProfile
     var onConnected: ((UUID) -> Void)?
+    var onTerminalOutput: ((Data) -> Void)?
+    var onConnectionLost: (() -> Void)?
     let local = BrowserModel()
     let remote = BrowserModel()
     let terminal = TerminalController()
@@ -308,6 +310,7 @@ final class SessionModel: ObservableObject, Identifiable {
         terminalTask?.cancel()
         terminalTask = nil
         terminal.message("连接已断开，请重新连接。")
+        onConnectionLost?()
     }
 
     func disconnect() {
@@ -411,7 +414,7 @@ final class SessionModel: ObservableObject, Identifiable {
     }
 
     private func receiveTerminal(_ data: Data, session token: UUID) {
-        if session == token { terminal.feed(data) }
+        if session == token { terminal.feed(data); onTerminalOutput?(data) }
     }
 
     func transfer(upload: Bool) {

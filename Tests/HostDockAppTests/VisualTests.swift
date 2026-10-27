@@ -7,6 +7,28 @@ import Testing
 
 @MainActor
 @Test(.enabled(if: ProcessInfo.processInfo.environment["HOSTDOCK_RENDER_CHECK"] == "1"))
+func renderReadOnlyAutomationRecordsInBothAppearances() async throws {
+    let fixture = try SessionFixture(); defer { fixture.clean() }
+    let app = fixture.app(transports: [])
+    let history = app.automationRecords; await history.restore()
+    let record = history.begin(profile: ConnectionProfile(name: "演示服务器", endpoint: ConnectionEndpoint(host: "192.0.2.10", port: 22, username: "demo")), sessionID: UUID())
+    history.emit(record, kind: .request, title: "exec", detail: "printf 'HostDock\\n'")
+    history.emit(record, kind: .result, title: "完成", result: .object(["stdout": .string("HostDock\n"), "stderr": .string(""), "exitCode": .number(0)]))
+    history.emit(record, kind: .terminal, data: Data("demo@host:~$ pwd\r\n/home/demo\r\n".utf8))
+    history.protect(host: record.header.host, sessionIDs: [record.header.sessionID!])
+    history.end(sessionID: record.header.sessionID!, reason: "用户结束并保护 5 分钟")
+    app.showRecord(record)
+    try await waitUntil { record.loaded && !record.loading }
+    for dark in [false, true] {
+        try await renderView(WorkspaceView(app: app), name: "build26-ai-record-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 1220, height: 760))
+        try await renderView(AutomationBackgroundView(app: app, controller: app.automation), name: "build26-ai-background-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 500, height: 400))
+        try await renderView(TerminalSurface(controller: record.terminal()), name: "build26-ai-terminal-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 800, height: 500))
+    }
+    await app.closeAllTabs(); try await history.flush(); await app.shutdown()
+}
+
+@MainActor
+@Test(.enabled(if: ProcessInfo.processInfo.environment["HOSTDOCK_RENDER_CHECK"] == "1"))
 func renderAutomationSettingsInBothAppearances() async throws {
     let fixture = try SessionFixture()
     defer { fixture.clean() }

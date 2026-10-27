@@ -50,13 +50,13 @@ private struct HostDockCommands: Commands {
                 let item = NSMenuItem()
                 item.tag = 1
                 NSApp.sendAction(#selector(NSTextView.performFindPanelAction(_:)), to: nil, from: item)
-            }.keyboardShortcut("f", modifiers: .command).disabled(editors.focused == nil)
+            }.keyboardShortcut("f", modifiers: .command).disabled(editors.focused == nil && model.selectedRecord == nil)
         }
         CommandMenu("连接") {
             Button("重新连接当前标签") { if let session = model.selectedSession { model.reconnect(session) } }
                 .disabled(model.selectedSession.map { !model.canReconnect($0) } ?? true)
-            Button("关闭当前标签") { if let session = model.selectedSession { model.requestCloseTab(session) } }
-                .keyboardShortcut("w", modifiers: [.command, .shift]).disabled(model.selectedSession == nil || model.closingTabs || model.closeAllConfirmationPresented)
+            Button("关闭当前标签", action: model.closeSelectedTab)
+                .keyboardShortcut("w", modifiers: [.command, .shift]).disabled(model.selectedSessionID == nil || model.closingTabs || model.closeAllConfirmationPresented)
             Button("关闭所有标签", action: model.requestCloseAllTabs).disabled(!model.canCloseAllTabs)
             Button("断开当前连接，保留会话") { model.selectedSession?.disconnect() }
                 .disabled(model.selectedSession?.connected != true || model.selectedSession?.disconnecting == true)
@@ -161,17 +161,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     terminating = false; sender.reply(toApplicationShouldTerminate: false); return
                 }
             }
-            do { try RemoteEditors.shared.persistDraftsForQuit() }
+            do {
+                try RemoteEditors.shared.persistDraftsForQuit()
+                try await model.automationRecords.flush()
+            }
             catch {
                 terminating = false
                 sender.reply(toApplicationShouldTerminate: false)
                 let alert = NSAlert()
-                alert.messageText = "草稿未能保存，退出已取消"
+                alert.messageText = "草稿或 AI 记录未能保存，退出已取消"
                 alert.informativeText = error.localizedDescription
                 if let window = sender.keyWindow { await alert.beginSheetModal(for: window) }
                 return
             }
             await model.shutdown()
+            do { try await model.automationRecords.flush() }
+            catch {
+                let alert = NSAlert()
+                alert.messageText = "AI 记录未能完整保存"
+                alert.informativeText = "连接已关闭。保留软件可重试保存；放弃后将丢失未写入部分。\n" + error.localizedDescription
+                alert.addButton(withTitle: "保留软件，重试保存"); alert.addButton(withTitle: "放弃并退出")
+                let response = if let window = sender.keyWindow { await alert.beginSheetModal(for: window) } else { alert.runModal() }
+                if response != .alertSecondButtonReturn {
+                    model.cancelShutdown(); terminating = false; sender.reply(toApplicationShouldTerminate: false); return
+                }
+            }
             RemoteEditors.shared.closeAll()
             sender.reply(toApplicationShouldTerminate: true)
         }

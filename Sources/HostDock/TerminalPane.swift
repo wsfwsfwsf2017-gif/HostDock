@@ -4,9 +4,18 @@ import SwiftUI
 
 // 原生终端会消费点击，活动区域需跟随 AppKit 焦点与鼠标事件。
 final class SessionTerminalView: TerminalView {
+    var readOnly = false
     var onFocus: (() -> Void)?
     var onMount: (() -> Void)?
     private var focused = false
+    override func insertText(_ insertString: Any, replacementRange: NSRange) {
+        guard !readOnly else { return }
+        super.insertText(insertString, replacementRange: replacementRange)
+    }
+    override func paste(_ sender: Any) {
+        guard !readOnly else { return }
+        super.paste(sender)
+    }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         guard window != nil else { return }
@@ -51,12 +60,14 @@ final class TerminalController: NSObject, TerminalViewDelegate {
     var onResize: ((Int, Int) -> Void)?
     private var darkAppearance: Bool?
 
-    override init() {
+    init(readOnly: Bool = false) {
         super.init()
+        view.readOnly = readOnly
+        view.allowMouseReporting = !readOnly
         view.terminalDelegate = self
         view.nativeForegroundColor = DockTheme.textNS
         view.nativeBackgroundColor = DockTheme.surfaceNS
-        view.setAccessibilityLabel("SSH 交互终端")
+        view.setAccessibilityLabel(readOnly ? "AI 终端记录，只读" : "SSH 交互终端")
     }
 
     func feed(_ data: Data) { view.feed(byteArray: Array(data)[...]) }
@@ -77,12 +88,12 @@ final class TerminalController: NSObject, TerminalViewDelegate {
     }
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        if ready { onInput?(Data(data)) }
+        if ready && !view.readOnly { onInput?(Data(data)) }
     }
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
         columns = newCols
         rows = newRows
-        if ready { onResize?(newCols, newRows) }
+        if ready && !view.readOnly { onResize?(newCols, newRows) }
     }
     func setTerminalTitle(source: TerminalView, title: String) {}
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
@@ -95,7 +106,7 @@ final class TerminalController: NSObject, TerminalViewDelegate {
 }
 
 // SwiftUI 拥有每次挂载的容器；会话终端可安全移入新容器，不被旧分支清理移除。
-private final class TerminalMount: NSView {
+final class TerminalMount: NSView {
     private var terminal: TerminalView?
     func bind(_ terminal: TerminalView) {
         guard self.terminal !== terminal else { return }
@@ -119,7 +130,7 @@ private final class TerminalMount: NSView {
     }
 }
 
-private struct TerminalSurface: NSViewRepresentable {
+struct TerminalSurface: NSViewRepresentable {
     let controller: TerminalController
     @Environment(\.colorScheme) private var colorScheme
     func makeNSView(context: Context) -> TerminalMount {

@@ -113,7 +113,8 @@ private func v7Socket() -> URL {
     let credentials = MemoryCredentialStore()
     try await credentials.save("synthetic-credential", account: profile.credentialAccount)
     let transport = FakeSessionConnection(home: fixture.remote(0), requiresTrust: true)
-    let app = AppModel(catalog: ConnectionCatalog(storage: store), credentials: credentials, makeConnection: { transport })
+    let app = AppModel(catalog: ConnectionCatalog(storage: store), credentials: credentials,
+        automationRecords: AutomationRecords(storage: FileAutomationRecordStorage(directory: fixture.root.appendingPathComponent("automation"))), makeConnection: { transport })
     let suite = "HostDock-v7-test-" + UUID().uuidString
     let defaults = try #require(UserDefaults(suiteName: suite)); defer { defaults.removePersistentDomain(forName: suite) }
     let socket = v7Socket(); defer { try? FileManager.default.removeItem(at: socket.deletingLastPathComponent()) }

@@ -67,6 +67,8 @@ actor FakeSessionConnection: SessionConnection {
     private(set) var connected = false
     private(set) var inputs: [Data] = []
     private(set) var sizes: [(Int, Int)] = []
+    private var echoInput = true
+    func setEchoInput(_ value: Bool) { echoInput = value }
     private var executionGate: TestGate?
     private var executionResult = SSHCommandResult(stdout: Data("synthetic-result".utf8))
     private(set) var commands: [String] = []
@@ -117,7 +119,7 @@ actor FakeSessionConnection: SessionConnection {
         await onReady()
         for await data in stream { await onOutput(data) }
     }
-    func writeTerminal(_ data: Data) { inputs.append(data); output?.yield(data) }
+    func writeTerminal(_ data: Data) { inputs.append(data); if echoInput { output?.yield(data) } }
     func resizeTerminal(columns: Int, rows: Int) { sizes.append((columns, rows)) }
     func emit(_ text: String) { output?.yield(Data(text.utf8)) }
     func drop() async { disconnect(); await disconnectHandler?() }
@@ -130,7 +132,7 @@ struct SessionFixture {
     init() throws {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.prohibited)
-        root = FileManager.default.temporaryDirectory.appendingPathComponent("hostdock-sessions-\(UUID())")
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("hds-\(UUID())")
         var profiles: [ConnectionProfile] = []
         for index in 0..<2 {
             let local = root.appendingPathComponent("local\(index)")
@@ -147,10 +149,11 @@ struct SessionFixture {
     }
     func remote(_ index: Int) -> String { profiles[index].remoteStartDirectory! }
     func clean() { try? FileManager.default.removeItem(at: root) }
-    func app(transports: [FakeSessionConnection], storage: MemoryConnectionStorage? = nil, credentials: any CredentialStore = MemoryCredentialStore(), editors: RemoteEditors? = nil, preferences: UserDefaults = .standard) -> AppModel {
+    func app(transports: [FakeSessionConnection], storage: MemoryConnectionStorage? = nil, credentials: any CredentialStore = MemoryCredentialStore(), editors: RemoteEditors? = nil, preferences: UserDefaults = .standard, automationRecords: AutomationRecords? = nil) -> AppModel {
         var index = 0
         return AppModel(catalog: ConnectionCatalog(storage: storage ?? MemoryConnectionStorage(ConnectionDocument(profiles: profiles))),
-                        credentials: credentials, preferences: preferences, editors: editors, makeConnection: {
+                        credentials: credentials, preferences: preferences, editors: editors,
+                        automationRecords: automationRecords ?? AutomationRecords(storage: FileAutomationRecordStorage(directory: root.appendingPathComponent("automation"))), makeConnection: {
                             guard index < transports.count else {
                                 Issue.record("测试没有配置所需的连接替身")
                                 return FakeSessionConnection(home: remote(0), failure: .network)

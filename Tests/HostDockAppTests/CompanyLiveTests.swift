@@ -336,7 +336,8 @@ func automationUsesRealSavedProfilesInTemporaryDirectories() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let suite = "HostDock-v7-live-" + UUID().uuidString
     let defaults = try #require(UserDefaults(suiteName: suite)); defer { defaults.removePersistentDomain(forName: suite) }
-    let app = AppModel(catalog: ConnectionCatalog(storage: MemoryConnectionStorage(selectedDocument)), credentials: ReadOnlySavedCredentials(), preferences: defaults)
+    let app = AppModel(catalog: ConnectionCatalog(storage: MemoryConnectionStorage(selectedDocument)), credentials: ReadOnlySavedCredentials(), preferences: defaults,
+        automationRecords: AutomationRecords(storage: FileAutomationRecordStorage(directory: root.appendingPathComponent("automation"))))
     let socket = FileManager.default.temporaryDirectory.appendingPathComponent("hdl-" + UUID().uuidString.prefix(8)).appendingPathComponent("control.sock")
     defer { try? FileManager.default.removeItem(at: socket.deletingLastPathComponent()) }
     let controller = AutomationController(app: app, defaults: defaults, socketURL: socket)

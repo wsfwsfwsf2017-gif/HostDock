@@ -262,7 +262,8 @@ private func assetFixture(_ index: Int, access: JumpServerAccessProfile) throws 
     var other = access; other.id = UUID(); other.host = "other.example"
     let catalog = ConnectionCatalog(storage: MemoryConnectionStorage(ConnectionDocument(profiles: [profile], jumpServerAccessProfiles: [access, other])))
     let transport = FakeSessionConnection(home: fixture.remote(0))
-    let app = AppModel(catalog: catalog, credentials: MemoryCredentialStore(), preferences: preferences, makeConnection: { transport })
+    let app = AppModel(catalog: catalog, credentials: MemoryCredentialStore(), preferences: preferences,
+        automationRecords: AutomationRecords(storage: FileAutomationRecordStorage(directory: fixture.root.appendingPathComponent("automation"))), makeConnection: { transport })
     app.rememberAccessSelection(other)
     let reopened = AppModel(catalog: catalog, credentials: MemoryCredentialStore(), preferences: preferences)
     #expect(reopened.preferredAccessProfile?.id == other.id)
