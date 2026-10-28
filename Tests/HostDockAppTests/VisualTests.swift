@@ -7,6 +7,44 @@ import Testing
 
 @MainActor
 @Test(.enabled(if: ProcessInfo.processInfo.environment["HOSTDOCK_RENDER_CHECK"] == "1"))
+func renderTerminalPaletteAndWorkspace() async throws {
+    let fixture = try SessionFixture(); defer { fixture.clean() }
+    for name in ["apps", "backups", "config", "logs"] {
+        try FileManager.default.createDirectory(atPath: fixture.remote(0) + "/" + name, withIntermediateDirectories: true)
+    }
+    var profile = fixture.profiles[0]
+    profile.name = "开发服务器"; profile.endpoint = ConnectionEndpoint(host: "192.0.2.10", port: 22, username: "demo")
+    let transport = FakeSessionConnection(home: fixture.remote(0))
+    let app = fixture.app(transports: [transport], storage: MemoryConnectionStorage(ConnectionDocument(profiles: [profile])))
+    let session = try app.connect(profile: profile, password: "synthetic-only", rememberPassword: true)
+    try await waitUntil { session.terminalReady && !session.connecting }
+    await app.refreshSavedConnections()
+    let sample = "demo@development:~$ ls -l\r\n"
+        + "drwxr-xr-x  4 demo demo  4096 Oct 28 10:00 \u{1b}[1;34mapps/\u{1b}[0m\r\n"
+        + "drwxr-xr-x  3 demo demo  4096 Oct 28 10:00 \u{1b}[34mbackups/\u{1b}[0m\r\n"
+        + "drwxr-xr-x  2 demo demo  4096 Oct 28 10:00 \u{1b}[94mconfig/\u{1b}[0m\r\n"
+        + "-rwxr-xr-x  1 demo demo  1024 Oct 28 10:00 \u{1b}[1;32mdeploy.sh\u{1b}[0m\r\n"
+        + "lrwxrwxrwx  1 demo demo    12 Oct 28 10:00 \u{1b}[36mcurrent\u{1b}[0m -> \u{1b}[34mapps/latest\u{1b}[0m\r\n"
+        + "\r\n\u{1b}[31mERROR\u{1b}[0m  \u{1b}[33mWARNING\u{1b}[0m  \u{1b}[32mSUCCESS\u{1b}[0m  \u{1b}[35mARCHIVE\u{1b}[0m\r\n\r\n"
+        + (30...37).map { "\u{1b}[\($0)m ANSI \($0) \u{1b}[0m" }.joined() + "\r\n"
+        + (90...97).map { "\u{1b}[\($0)m ANSI \($0) \u{1b}[0m" }.joined() + "\r\n\r\n"
+        + "\u{1b}[30;42m BLACK ON GREEN \u{1b}[0m  \u{1b}[7m REVERSE \u{1b}[0m  \u{1b}[38;2;123;145;167mTRUE COLOR\u{1b}[0m\r\n\r\ndemo@development:~$ "
+    await transport.emit(sample)
+    try await waitUntil { String(decoding: session.terminal.view.getBufferAsData(), as: UTF8.self).contains("TRUE COLOR") }
+    session.remote.selection = [fixture.remote(0) + "/config"]
+    for dark in [true, false] {
+        let mode = dark ? "dark" : "light"
+        try await renderView(WorkspaceView(app: app), name: "palette-workspace-\(mode)", dark: dark, size: NSSize(width: 1440, height: 900), emphasizedSelection: true)
+        try await renderView(TerminalSurface(controller: session.terminal), name: "palette-terminal-\(mode)", dark: dark, size: NSSize(width: 900, height: 550))
+        session.terminal.view.selectAll()
+        try await renderView(TerminalSurface(controller: session.terminal), name: "palette-selection-\(mode)", dark: dark, size: NSSize(width: 900, height: 550))
+        session.terminal.view.selectNone()
+    }
+    await app.shutdown()
+}
+
+@MainActor
+@Test(.enabled(if: ProcessInfo.processInfo.environment["HOSTDOCK_RENDER_CHECK"] == "1"))
 func renderReadOnlyAutomationRecordsInBothAppearances() async throws {
     let fixture = try SessionFixture(); defer { fixture.clean() }
     let app = fixture.app(transports: [])

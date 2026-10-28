@@ -4,6 +4,7 @@ import HostDockCore
 import SwiftUI
 import Testing
 @testable import HostDock
+@testable import SwiftTerm
 
 private func contrast(_ foreground: NSColor, _ background: NSColor) -> CGFloat {
     func luminance(_ color: NSColor) -> CGFloat {
@@ -20,6 +21,58 @@ private func contrast(_ foreground: NSColor, _ background: NSColor) -> CGFloat {
 @Suite(.serialized)
 @MainActor
 struct AppearanceTests {
+    @Test func ansiPaletteIsReadableAndSurvivesResetWithoutChangingTerminalState() throws {
+        _ = NSApplication.shared
+        let previous = NSApp.appearance
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+        defer { NSApp.appearance = previous }
+        for readOnly in [false, true] {
+            let terminal = TerminalController(readOnly: readOnly)
+            var input = Data(), resizeCount = 0
+            terminal.ready = true
+            terminal.onInput = { input.append($0) }
+            terminal.onResize = { _, _ in resizeCount += 1 }
+            func palette() -> [SwiftTerm.Color] {
+                terminal.view.withTerminal { engine in (0..<16).compactMap { engine.paletteColor(index: $0) } }
+            }
+            func assertReadablePalette() {
+                let colors = palette()
+                #expect(colors.count == 16)
+                // ANSI 黑色仍用于彩色背景上的黑字；其余常用前景需在默认背景上可读。
+                for color in colors.dropFirst() {
+                    let native = NSColor(srgbRed: CGFloat(color.red) / 65535, green: CGFloat(color.green) / 65535,
+                                         blue: CGFloat(color.blue) / 65535, alpha: 1)
+                    #expect(contrast(native, terminal.view.nativeBackgroundColor) >= 4.5)
+                }
+            }
+            assertReadablePalette()
+            let darkColors = palette(), strategy = terminal.view.ansi256PaletteStrategy
+            terminal.feed(Data(((0..<100).map { "line \($0)\r\n" }.joined()
+                + "\u{1b}[34mBLUE\u{1b}[1;34m BOLD_BLUE\u{1b}[94m BRIGHT_BLUE\u{1b}[0m\r\n"
+                + "\u{1b}[38;2;123;145;167mTRUE_COLOR\u{1b}[0m\r\n").utf8))
+            terminal.view.scrollTo(row: 10)
+            terminal.view.selectAll()
+            let buffer = Data(terminal.view.getBufferAsData()), selection = terminal.view.getSelection()
+            let state = terminal.view.terminalStateSnapshot()
+            for dark in [false, true, false, true] {
+                terminal.applyAppearance(dark: dark)
+                #expect(palette() == (dark ? darkColors : SwiftTerm.Color.terminalAppColors))
+                #expect(Data(terminal.view.getBufferAsData()) == buffer)
+                #expect(terminal.view.getSelection() == selection)
+                #expect(terminal.view.terminalStateSnapshot().viewportRow == state.viewportRow)
+                #expect(terminal.view.terminalStateSnapshot().cursor == state.cursor)
+                #expect(terminal.view.ansi256PaletteStrategy == strategy)
+            }
+            terminal.reset()
+            #expect(palette() == darkColors)
+            assertReadablePalette()
+            terminal.applyAppearance(dark: false)
+            terminal.reset()
+            #expect(palette() == SwiftTerm.Color.terminalAppColors)
+            #expect(input.isEmpty && resizeCount == 0)
+        }
+    }
+
     @Test func appearancePreferenceRestoresAllChoicesAndInvalidValuesFollowSystem() throws {
         let fixture = try SessionFixture(); defer { fixture.clean() }
         let suite = "HostDock.AppearanceTests.\(UUID())"

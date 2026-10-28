@@ -59,20 +59,30 @@ final class TerminalController: NSObject, TerminalViewDelegate {
     var onInput: ((Data) -> Void)?
     var onResize: ((Int, Int) -> Void)?
     private var darkAppearance: Bool?
+    private static let darkColors: [SwiftTerm.Color] = [
+        0x1B1D21, 0xE58F91, 0xA5C9A1, 0xD8BE85, 0x8EB6F5, 0xC1A0D8, 0x8EC8CC, 0xCDD2DB,
+        0x8B929D, 0xF0ACAE, 0xBCDDB8, 0xEAD2A0, 0xB1CCF9, 0xD7BBE9, 0xAEDDE0, 0xE7EBF0,
+    ].map { SwiftTerm.Color(red8: UInt16(($0 >> 16) & 255), green8: UInt16(($0 >> 8) & 255), blue8: UInt16($0 & 255)) }
 
     init(readOnly: Bool = false) {
         super.init()
         view.readOnly = readOnly
         view.allowMouseReporting = !readOnly
         view.terminalDelegate = self
-        view.nativeForegroundColor = DockTheme.textNS
-        view.nativeBackgroundColor = DockTheme.surfaceNS
         view.setAccessibilityLabel(readOnly ? "AI 终端记录，只读" : "SSH 交互终端")
+        applyAppearance(dark: view.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
     }
 
     func feed(_ data: Data) { view.feed(byteArray: Array(data)[...]) }
     func message(_ text: String) { feed(Data(("\r\n" + text + "\r\n").utf8)) }
-    func reset() { view.feed(byteArray: [0x1b, 0x63][...]) }
+    func reset() {
+        view.feed(byteArray: [0x1b, 0x63][...])
+        // RIS 会恢复 SwiftTerm 的内置色板，重连和记录重载后需恢复当前主题。
+        if let dark = darkAppearance {
+            darkAppearance = nil
+            applyAppearance(dark: dark)
+        }
+    }
 
     func applyAppearance(dark: Bool) {
         guard darkAppearance != dark else { return }
@@ -85,6 +95,7 @@ final class TerminalController: NSObject, TerminalViewDelegate {
             view.selectedTextForegroundColor = NSColor.selectedTextColor.usingColorSpace(.sRGB) ?? .selectedTextColor
             view.selectedTextBackgroundColor = NSColor.selectedTextBackgroundColor.usingColorSpace(.sRGB) ?? .selectedTextBackgroundColor
         }
+        view.installColors(dark ? Self.darkColors : SwiftTerm.Color.terminalAppColors)
     }
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
