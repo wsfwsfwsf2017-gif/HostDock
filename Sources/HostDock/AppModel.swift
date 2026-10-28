@@ -28,6 +28,7 @@ final class AppModel: ObservableObject {
     }
     let editors: RemoteEditors
     let automationRecords: AutomationRecords
+    let diagnostics: DiagnosticLog
     let reservations = TransferReservations()
     lazy var automation = AutomationController(app: self)
     @Published private(set) var sessions: [SessionModel] = []
@@ -77,15 +78,17 @@ final class AppModel: ObservableObject {
          preferences: UserDefaults = .standard,
          editors: RemoteEditors? = nil,
          automationRecords: AutomationRecords? = nil,
+         diagnostics: DiagnosticLog = .disabled,
          makeConnection: @escaping () -> any SessionConnection = { LiveSessionConnection() }) {
         let catalog = catalog ?? ConnectionCatalog()
         self.catalog = catalog
         self.credentials = credentials
         self.makeConnection = makeConnection
         self.preferences = preferences
+        self.diagnostics = diagnostics
         appearance = AppAppearance(rawValue: preferences.string(forKey: AppAppearance.preferenceKey) ?? "") ?? .system
         self.editors = editors ?? .shared
-        self.automationRecords = automationRecords ?? AutomationRecords()
+        self.automationRecords = automationRecords ?? AutomationRecords(diagnostics: diagnostics)
         pickerSelection = .new
         Task { await refreshSavedConnections() }
     }
@@ -215,18 +218,21 @@ final class AppModel: ObservableObject {
     }
 
     func setLayout(_ layout: WorkspaceLayout) {
+        diagnostics.record(.layoutChanged, layout: layout.rawValue, tabs: workspaceTabIDs.count, critical: true)
         workspace.setLayout(layout, tabs: workspaceTabIDs)
         selectedSessionID = workspace.slots[workspace.activeSlot]
     }
 
     func selectTab(_ id: UUID) {
         guard workspaceTabIDs.contains(id) else { return }
+        diagnostics.record(.tabSelected, id: id, layout: workspace.layout.rawValue, tabs: workspaceTabIDs.count, critical: true)
         workspace.select(id)
         selectedSessionID = id
     }
 
     func focusPane(_ index: Int) {
         guard (0..<workspace.layout.rawValue).contains(index) else { return }
+        diagnostics.record(.paneFocused, id: workspace.slots[index], layout: workspace.layout.rawValue, count: index)
         workspace.focus(index)
         selectedSessionID = workspace.slots[index]
     }
@@ -245,8 +251,12 @@ final class AppModel: ObservableObject {
 
     func showRecord(_ record: AutomationRecord) {
         guard !closingTabs, !shuttingDown else { return }
+        diagnostics.record(recordTabs.contains(where: { $0.id == record.id }) ? .recordTabLocated : .recordTabCreateRequested,
+                           id: record.id, relatedID: record.header.sessionID, layout: workspace.layout.rawValue,
+                           tabs: workspaceTabIDs.count, critical: true)
         if !recordTabs.contains(where: { $0.id == record.id }) {
             recordTabs.append(record); workspaceTabIDs.append(record.id)
+            diagnostics.record(.recordTabCreated, id: record.id, tabs: workspaceTabIDs.count, critical: true)
         }
         selectTab(record.id)
         NSApp.keyWindow?.makeFirstResponder(nil)
@@ -257,6 +267,7 @@ final class AppModel: ObservableObject {
     }
 
     func closeRecord(_ id: UUID) {
+        diagnostics.record(.recordTabClosed, id: id, tabs: workspaceTabIDs.count, critical: true)
         recordTabs.removeAll { $0.id == id }
         automationRecords.closeView(id)
         removeWorkspaceTab(id)
@@ -335,7 +346,7 @@ final class AppModel: ObservableObject {
         let resolved = try catalog.resolve(profile)
         _ = try catalog.validate(resolved.profile)
         let session = SessionModel(profile: resolved.profile, catalog: catalog, credentials: credentials,
-                                   connection: makeConnection(), reservations: reservations, origin: .automation)
+                                   connection: makeConnection(), reservations: reservations, origin: .automation, diagnostics: diagnostics)
         let record = record ?? automationRecords.begin(profile: resolved.profile)
         automationRecords.bind(record, sessionID: session.id)
         session.onTerminalOutput = { [weak history = automationRecords, weak record] data in
@@ -415,7 +426,7 @@ final class AppModel: ObservableObject {
         if let previous { session = previous }
         else {
             session = SessionModel(profile: profile, catalog: catalog, credentials: credentials,
-                                   connection: makeConnection(), reservations: reservations)
+                                   connection: makeConnection(), reservations: reservations, diagnostics: diagnostics)
             session.terminal.view.onFocus = { [weak self, weak session] in
                 guard let self, let session, !self.shuttingDown, !self.closingTabs, self.selectedSessionID != session.id,
                       let index = self.workspace.slots.prefix(self.workspace.layout.rawValue).firstIndex(of: session.id),
@@ -459,7 +470,7 @@ final class AppModel: ObservableObject {
         guard !updatingRecords, !shuttingDown else { throw HostDockError("正在处理连接，请稍后重试。") }
         let profile = try access.applying(to: asset)
         updatingRecords = true
-        let session = SessionModel(profile: profile, catalog: catalog, credentials: credentials, connection: makeConnection(), reservations: reservations)
+        let session = SessionModel(profile: profile, catalog: catalog, credentials: credentials, connection: makeConnection(), reservations: reservations, diagnostics: diagnostics)
         accessValidationSession = session
         defer { accessValidationSession = nil; updatingRecords = false }
         session.connect(profile: profile, password: password, rememberPassword: true, accessProfile: access, validationOnly: true)

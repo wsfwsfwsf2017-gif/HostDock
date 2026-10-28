@@ -103,6 +103,9 @@ final class AutomationController: ObservableObject {
         guard request.version == 1, tasks[request.id] == nil, tasks.count < 32 else {
             return ControlResponse(request.id, error: ControlFailure("INVALID_REQUEST", "协议版本不兼容、请求 ID 重复或请求过多。"))
         }
+        let diagnosticSpan = DiagnosticOperation.automation(request.command).flatMap { operation in
+            app?.diagnostics.begin(operation, id: request.arguments["session"].flatMap(UUID.init(uuidString:)), origin: .automation)
+        }
         let task = Task { @MainActor [weak self] in
             do {
                 guard let self else { throw CancellationError() }
@@ -135,6 +138,7 @@ final class AutomationController: ObservableObject {
         }
         stoppedRequests.removeValue(forKey: request.id)
         tasks.removeValue(forKey: request.id); requests.removeValue(forKey: request.id); activeCount = tasks.count
+        if let diagnosticSpan { app?.diagnostics.finish(diagnosticSpan, failure: result.error.map { .classify($0) }) }
         return result
     }
     private func session(_ request: ControlRequest) throws -> SessionModel {

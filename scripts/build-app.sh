@@ -7,7 +7,9 @@ test "$(uname -m)" = arm64
 python3 scripts/release.py version
 swift package resolve --force-resolved-versions
 python3 scripts/prepare-dependencies.py
-swift build -c release
+swift build -c release -Xswiftc -gline-tables-only \
+    -Xswiftc -debug-prefix-map -Xswiftc "$task_root=/HostDock" \
+    -Xswiftc -debug-prefix-map -Xswiftc "$HOME=/BuildUser"
 task_bin="$(swift build -c release --show-bin-path)"
 mkdir -p dist
 task_stage="$(mktemp -d "$task_root/dist/.HostDock.XXXXXX")"
@@ -20,6 +22,7 @@ cp "$task_bin/HostDock" "$task_app/Contents/MacOS/HostDock"
 cp "$task_bin/HostDockCLI" "$task_app/Contents/Helpers/hostdock"
 codesign --force --sign - "$task_app/Contents/Helpers/hostdock"
 cp packaging/Info.plist "$task_app/Contents/Info.plist"
+python3 scripts/archive-symbols.py "$task_bin" "$task_app/Contents/Resources"
 for task_bundle in "$task_bin"/*.bundle; do
     if [ -d "$task_bundle" ]; then ditto "$task_bundle" "$task_app/Contents/Resources/$(basename "$task_bundle")"; fi
 done

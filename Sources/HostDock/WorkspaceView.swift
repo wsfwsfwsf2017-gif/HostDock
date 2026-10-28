@@ -193,7 +193,11 @@ private struct WorkspaceTabs: View {
                     }.padding(.horizontal, 8)
                 }.scrollIndicators(.hidden)
                     .onChange(of: app.selectedSessionID, initial: true) { _, id in
-                        if let id { proxy.scrollTo(id, anchor: .trailing) }
+                        if let id {
+                            app.diagnostics.record(.tabScrollStarted, id: id, tabs: app.workspaceTabIDs.count, critical: true)
+                            proxy.scrollTo(id, anchor: .trailing)
+                            app.diagnostics.record(.tabScrollFinished, id: id)
+                        }
                     }
             }.frame(maxWidth: .infinity)
             DockTabs(options: WorkspaceLayout.allCases.map { ($0, $0.title) }, selection: Binding(get: { app.workspace.layout }, set: app.setLayout))

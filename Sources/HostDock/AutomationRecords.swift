@@ -194,6 +194,7 @@ final class AutomationRecords: ObservableObject {
     @Published private(set) var notice: String?
     @Published private(set) var protectionFailure: String?
     private let storage: any AutomationRecordStorage
+    let diagnostics: DiagnosticLog
     private let now: () -> Date
     private let recordLimit: Int
     private let totalLimit: Int
@@ -207,7 +208,8 @@ final class AutomationRecords: ObservableObject {
     private var writeFailure: Error?
     private var protectionRevision = 0
     init(storage: any AutomationRecordStorage = FileAutomationRecordStorage(), now: @escaping () -> Date = Date.init,
-         recordLimit: Int = 20 * 1024 * 1024, totalLimit: Int = 200 * 1024 * 1024) {
+         recordLimit: Int = 20 * 1024 * 1024, totalLimit: Int = 200 * 1024 * 1024, diagnostics: DiagnosticLog = .disabled) {
+        self.diagnostics = diagnostics
         self.storage = storage; self.now = now; self.recordLimit = recordLimit; self.totalLimit = totalLimit
     }
     static func serverKey(_ host: String) -> String {
@@ -286,18 +288,21 @@ final class AutomationRecords: ObservableObject {
         guard !deleting.contains(record.id) else { return }
         pinned.insert(record.id)
         guard !record.loaded else { return }
+        let span = diagnostics.begin(.recordLoad, id: record.id, origin: .automation)
+        var failure: DiagnosticFailure?
+        defer { diagnostics.finish(span, failure: failure, count: record.events.count) }
         record.beginLoading()
         await writer?.value
         do {
             let saved = try await storage.loadEvents(record.id)
-            guard pinned.contains(record.id) else { return }
+            guard pinned.contains(record.id) else { failure = .cancelled; return }
             let unsaved = pending.compactMap { item -> AutomationRecordEvent? in
                 guard case .event(let id, let data) = item.1, id == record.id else { return nil }
                 return try? JSONDecoder().decode(AutomationRecordEvent.self, from: data)
             }
             record.finishLoading(saved + unsaved)
             if record.header.truncated { record.notice = "此记录达到容量上限，内容不完整。" }
-        } catch { record.loading = false; record.notice = "记录无法完整读取，原文件已保留：\(error.localizedDescription)" }
+        } catch { failure = .classify(error); record.loading = false; record.notice = "记录无法完整读取，原文件已保留：\(error.localizedDescription)" }
     }
     func closeView(_ id: UUID) { pinned.remove(id); records.first { $0.id == id }?.unload(); prune(required: 0) }
     func delete(_ record: AutomationRecord) async {

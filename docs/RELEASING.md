@@ -62,3 +62,13 @@ swift scripts/install-app.swift <下载目录>/HostDock-$RELEASE_VERSION-arm64.z
 - macOS 14 为最低部署目标；CI 的 macOS 15 和当前本机运行检查不代表 macOS 14 实机、其他 Mac 或外接屏已通过。
 
 当前仅提供临时签名，未经 Apple 公证。没有 Intel、自动更新、全局 CLI 安装或付费签名步骤。
+
+## 诊断与调试符号
+
+诊断默认开启，只在本机 `~/Library/Logs/HostDock/Diagnostics` 保存固定事件、匿名对象编号、耗时和错误类别，不保存命令正文、终端内容、服务器地址、账号、真实路径或认证。目录为 700、文件为 600，保留 14 天、单文件不超过 2 MiB、总量不超过 20 MiB。设置「诊断」或帮助菜单可导出 ZIP，不自动上传，也不包含 AI 操作记录、连接资料和草稿。
+
+诊断包包含当前运行与最近一次未正常结束运行的可读取事件，并尝试匹配 macOS 系统崩溃报告。未正常退出不等于确认崩溃；强制退出、断电和系统报告缺失等情况可能只有操作线索。原始系统报告保留在 macOS 的 DiagnosticReports 目录，导出只采用白名单提取堆栈和异常摘要。关键动作前完成小型文件写入，不承诺断电时最后一条必定落盘。
+
+Release 构建保留函数与行号所需的调试信息，将工程根目录映射为 `/HostDock`、用户主目录映射为 `/BuildUser`。`scripts/archive-symbols.py` 从实际构建程序生成 dSYM，校验 ARM64、UUID 和 DWARF 后压缩到 `dist/Symbols/HostDock-X.Y.Z-buildN-UUID.zip`；App 仅包含 UUID 构建信息，不包含 dSYM。相同名称的不同内容拒绝覆盖。符号 ZIP 被 Git 排除；正式构建的 Actions 将其单独保留 90 天，不增加 Release 附件数量。公共仓库的 Actions 产物可能被他人下载，不在符号包中加入日志、业务数据或认证。
+
+分析崩溃时必须使用报告中程序 UUID 对应的符号 ZIP，不可拿最新构建的符号代替旧版。诊断会改变极少量执行时间，不应把未复现崩溃或添加日志本身当作修复证据。

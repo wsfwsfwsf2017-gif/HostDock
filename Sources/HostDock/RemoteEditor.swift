@@ -114,6 +114,9 @@ final class RemoteDocument: ObservableObject {
         let previousKey = key
         guard data.count <= Self.sizeLimit else { status = "内容超过 5 MiB，请另行传输。"; return false }
         do { try persistDraft() } catch { status = error.localizedDescription; return false }
+        let diagnosticSpan = session.diagnostics.begin(.editorSave, id: session.id, origin: session.diagnosticOrigin)
+        var diagnosticFailure: DiagnosticFailure?
+        defer { session.diagnostics.finish(diagnosticSpan, failure: diagnosticFailure) }
         saving = true; conflict = false; status = "等待保存到 \(target)…"
         defer { saving = false }
         do {
@@ -131,6 +134,7 @@ final class RemoteDocument: ObservableObject {
             try persistDraft()
             return true
         } catch {
+            diagnosticFailure = .classify(error)
             conflict = error is FileChangedError
             status = error.localizedDescription
             try? persistDraft()

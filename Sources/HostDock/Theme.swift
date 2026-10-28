@@ -24,6 +24,8 @@ struct AppSettingsView: View {
             }.padding(26)
             Divider()
             AutomationSettingsView(controller: app.automation)
+            Divider()
+            DiagnosticsSettingsView(diagnostics: app.diagnostics)
         }.frame(width: 560).background(DockTheme.surface).foregroundStyle(DockTheme.text).tint(DockTheme.accent)
     }
 }

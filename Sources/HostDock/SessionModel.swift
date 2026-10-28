@@ -24,6 +24,8 @@ enum SessionOrigin { case interactive, automation }
 final class SessionModel: ObservableObject, Identifiable {
     let id = UUID()
     let origin: SessionOrigin
+    let diagnostics: DiagnosticLog
+    var diagnosticOrigin: DiagnosticOrigin { origin == .interactive ? .interactive : .automation }
     @Published private(set) var profile: ConnectionProfile
     var onConnected: ((UUID) -> Void)?
     var onTerminalOutput: ((Data) -> Void)?
@@ -99,7 +101,8 @@ final class SessionModel: ObservableObject, Identifiable {
 
     init(profile: ConnectionProfile, catalog: ConnectionCatalog, credentials: any CredentialStore,
          connection: any SessionConnection = LiveSessionConnection(), reservations: TransferReservations = TransferReservations(),
-         origin: SessionOrigin = .interactive) {
+         origin: SessionOrigin = .interactive, diagnostics: DiagnosticLog = .disabled) {
+        self.diagnostics = diagnostics
         self.origin = origin
         self.visible = origin == .interactive
         self.profile = profile
@@ -112,10 +115,11 @@ final class SessionModel: ObservableObject, Identifiable {
     func connect(profile requested: ConnectionProfile, password supplied: String?, rememberPassword: Bool,
                  accessProfile: JumpServerAccessProfile? = nil, validationOnly: Bool = false) {
         guard !busy, !connected else { return }
+        let diagnosticSpan = diagnostics.begin(.connect, id: id, origin: diagnosticOrigin)
         let profile: ConnectionProfile
         let access: JumpServerAccessProfile?
         do { let resolved = try catalog.resolve(requested, accessProfile: accessProfile); profile = resolved.profile; access = resolved.access }
-        catch { connectionError = error.localizedDescription; return }
+        catch { diagnostics.finish(diagnosticSpan, failure: .classify(error)); connectionError = error.localizedDescription; return }
         let endpoint = profile.endpoint
         self.profile = profile
         acceptedFingerprint = nil
@@ -124,6 +128,8 @@ final class SessionModel: ObservableObject, Identifiable {
         let token = UUID()
         attempt = token
         connectionTask = Task { [self] in
+            var diagnosticFailure: DiagnosticFailure? = .cancelled
+            defer { diagnostics.finish(diagnosticSpan, failure: diagnosticFailure) }
             defer { if attempt == token { connecting = false; connectionTask = nil } }
             do {
                 var secret = supplied.flatMap { $0.isEmpty ? nil : $0 }
@@ -140,10 +146,10 @@ final class SessionModel: ObservableObject, Identifiable {
                 let authentication: SSHAuthentication
                 switch profile.authenticationKind {
                 case .password:
-                    guard let secret else { passwordRequired = true; return }
+                    guard let secret else { diagnosticFailure = .authentication; passwordRequired = true; return }
                     authentication = .password(secret)
                 case .rsaKey:
-                    if profile.keyRequiresPassphrase && secret == nil { passwordRequired = true; return }
+                    if profile.keyRequiresPassphrase && secret == nil { diagnosticFailure = .keyPassphrase; passwordRequired = true; return }
                     authentication = .rsaKey(path: profile.privateKeyPath ?? "", passphrase: secret)
                 }
                 let result = try await connection.connect(
@@ -191,11 +197,13 @@ final class SessionModel: ObservableObject, Identifiable {
                     catch { credentialNotice = "已连接，但最近连接记录未能保存。\(error.localizedDescription)" }
                 }
                 if attempt == token, !Task.isCancelled {
+                    diagnosticFailure = nil
                     connected = true
                     if !validationOnly && origin == .interactive { terminal.reset(); startTerminal() }
                     onConnected?(id)
                 }
             } catch {
+                diagnosticFailure = .classify(error)
                 if attempt == token {
                     finishHostTrust(false)
                     if !Task.isCancelled {
@@ -252,6 +260,7 @@ final class SessionModel: ObservableObject, Identifiable {
 
     func cancelConnection() {
         guard connecting, !connected else { return }
+        diagnostics.record(.cancelled, id: id, operation: .connect, origin: diagnosticOrigin, critical: true)
         finishHostTrust(false)
         attempt = UUID()
         connecting = false
@@ -291,6 +300,7 @@ final class SessionModel: ObservableObject, Identifiable {
 
     private func connectionDropped(attempt token: UUID) {
         guard attempt == token else { return }
+        diagnostics.record(.operationFinished, id: id, operation: .disconnect, origin: diagnosticOrigin, failure: .network)
         attempt = UUID()
         connectionTask?.cancel()
         connectionTask = nil
@@ -320,6 +330,8 @@ final class SessionModel: ObservableObject, Identifiable {
     }
 
     func shutdown() async {
+        let diagnosticSpan = diagnostics.begin(.disconnect, id: id, origin: diagnosticOrigin)
+        defer { diagnostics.finish(diagnosticSpan) }
         await cancellationTask?.value
         disconnecting = true
         await closeSession()
@@ -363,6 +375,7 @@ final class SessionModel: ObservableObject, Identifiable {
 
     func startTerminal() {
         guard connected, !terminalRunning else { return }
+        let diagnosticSpan = diagnostics.begin(.terminal, id: id, origin: diagnosticOrigin)
         terminalRunning = true
         terminalReady = false
         terminal.ready = false
@@ -382,7 +395,9 @@ final class SessionModel: ObservableObject, Identifiable {
             }
         }
         terminalTask = Task { [self] in
+            var diagnosticFailure: DiagnosticFailure?
             defer {
+                diagnostics.finish(diagnosticSpan, failure: diagnosticFailure)
                 continuation.finish()
                 if session == token {
                     terminal.ready = false
@@ -401,6 +416,7 @@ final class SessionModel: ObservableObject, Identifiable {
                     onOutput: { [weak self] data in await self?.receiveTerminal(data, session: token) })
                 if session == token { terminal.message("终端会话已结束。") }
             } catch {
+                diagnosticFailure = .classify(error)
                 if session == token && connected { terminal.message("终端结束：\(error.localizedDescription)") }
             }
         }
@@ -440,6 +456,9 @@ final class SessionModel: ObservableObject, Identifiable {
             : ["local"]
         waitingForTarget = true
         transferTask = Task { [self] in
+            let diagnosticSpan = diagnostics.begin(.transfer, id: id, origin: diagnosticOrigin)
+            var diagnosticFailure: DiagnosticFailure?
+            defer { diagnostics.finish(diagnosticSpan, failure: diagnosticFailure, count: completed) }
             var acquired = false
             do {
                 let canonical = try await destination.canonicalDirectory(at: directory)
@@ -456,8 +475,10 @@ final class SessionModel: ObservableObject, Identifiable {
                 transferLabel = "传输完成 · 完成 \(completed) 项" + (skipped > 0 ? "，跳过 \(skipped) 项" : "")
                 progress = 1
             } catch is CancellationError {
+                diagnosticFailure = .cancelled
                 transferLabel = "已取消 · 已完成的项目保留"
             } catch {
+                diagnosticFailure = .classify(error)
                 transferLabel = "传输失败，请查看记录"
                 logs.append(TransferLog(text: error.localizedDescription, warning: true))
             }
@@ -473,6 +494,7 @@ final class SessionModel: ObservableObject, Identifiable {
 
     func cancelTransfer() {
         guard transferring else { return }
+        diagnostics.record(.cancelled, id: id, operation: .transfer, origin: diagnosticOrigin, critical: true)
         finishConflict(.cancel)
         transferTask?.cancel()
         transferLabel = "正在取消并清理临时文件…"
@@ -488,55 +510,62 @@ final class SessionModel: ObservableObject, Identifiable {
 
     func runFileOperation(_ label: String, localPaths: [String] = [], remotePaths: [String] = [],
                           operation: @escaping @Sendable () async throws -> Void) async throws {
-        let token = session
-        while transferring {
-            try Task.checkCancellation()
-            guard connected, !disconnecting, session == token else { throw HostDockError("原会话已断开，操作未执行。") }
-            try await Task.sleep(for: .milliseconds(80))
-        }
-        guard connected, !disconnecting, session == token else { throw HostDockError("请先连接原服务器。") }
-        let remoteIdentities = ["remote:\(profile.endpoint.host):\(profile.endpoint.port)"]
-            + (acceptedFingerprint.map { ["hostkey:\($0)"] } ?? [])
-        let paths = try localPaths.map { try TransferDestination(storage: "local", path: $0) }
-            + remotePaths.flatMap { path in try remoteIdentities.map { try TransferDestination(storage: $0, path: path) } }
-        transferring = true
-        transferLabel = label
-        completed = 0; skipped = 0
-        logs = [TransferLog(text: label, warning: false)]
-        progress = 0
-        let requestID = UUID()
-        fileOperationID = requestID
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                transferTask = Task { [self] in
-                    var acquired = false
-                    var failure: Error?
-                    do {
-                        waitingForTarget = true
-                        try await reservations.acquire(paths, id: requestID)
-                        acquired = true; waitingForTarget = false
-                        try Task.checkCancellation()
-                        try await operation()
-                        transferLabel = "\(label)完成"; progress = 1
-                    } catch {
-                        failure = error
-                        transferLabel = error is CancellationError ? "已取消 · 已完成的项目保留" : "\(label)失败"
-                        logs.append(TransferLog(text: error.localizedDescription, warning: true))
+        let diagnosticSpan = diagnostics.begin(.fileOperation, id: id, origin: diagnosticOrigin)
+        do {
+            let token = session
+            while transferring {
+                try Task.checkCancellation()
+                guard connected, !disconnecting, session == token else { throw HostDockError("原会话已断开，操作未执行。") }
+                try await Task.sleep(for: .milliseconds(80))
+            }
+            guard connected, !disconnecting, session == token else { throw HostDockError("请先连接原服务器。") }
+            let remoteIdentities = ["remote:\(profile.endpoint.host):\(profile.endpoint.port)"]
+                + (acceptedFingerprint.map { ["hostkey:\($0)"] } ?? [])
+            let paths = try localPaths.map { try TransferDestination(storage: "local", path: $0) }
+                + remotePaths.flatMap { path in try remoteIdentities.map { try TransferDestination(storage: $0, path: path) } }
+            transferring = true
+            transferLabel = label
+            completed = 0; skipped = 0
+            logs = [TransferLog(text: label, warning: false)]
+            progress = 0
+            let requestID = UUID()
+            fileOperationID = requestID
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    transferTask = Task { [self] in
+                        var acquired = false
+                        var failure: Error?
+                        do {
+                            waitingForTarget = true
+                            try await reservations.acquire(paths, id: requestID)
+                            acquired = true; waitingForTarget = false
+                            try Task.checkCancellation()
+                            try await operation()
+                            transferLabel = "\(label)完成"; progress = 1
+                        } catch {
+                            failure = error
+                            transferLabel = error is CancellationError ? "已取消 · 已完成的项目保留" : "\(label)失败"
+                            logs.append(TransferLog(text: error.localizedDescription, warning: true))
+                        }
+                        if acquired { await reservations.release(requestID) }
+                        waitingForTarget = false
+                        finishConflict(.cancel)
+                        await local.refresh(); await remote.refresh()
+                        transferring = false; transferTask = nil
+                        if fileOperationID == requestID { fileOperationID = nil }
+                        if let failure { continuation.resume(throwing: failure) }
+                        else { continuation.resume() }
                     }
-                    if acquired { await reservations.release(requestID) }
-                    waitingForTarget = false
-                    finishConflict(.cancel)
-                    await local.refresh(); await remote.refresh()
-                    transferring = false; transferTask = nil
-                    if fileOperationID == requestID { fileOperationID = nil }
-                    if let failure { continuation.resume(throwing: failure) }
-                    else { continuation.resume() }
+                }
+            } onCancel: {
+                Task { @MainActor [weak self] in
+                    if self?.fileOperationID == requestID { self?.cancelTransfer() }
                 }
             }
-        } onCancel: {
-            Task { @MainActor [weak self] in
-                if self?.fileOperationID == requestID { self?.cancelTransfer() }
-            }
+            diagnostics.finish(diagnosticSpan)
+        } catch {
+            diagnostics.finish(diagnosticSpan, failure: .classify(error))
+            throw error
         }
     }
 

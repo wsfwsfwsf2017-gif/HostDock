@@ -32,9 +32,10 @@ func renderReadOnlyAutomationRecordsInBothAppearances() async throws {
 func renderAutomationSettingsInBothAppearances() async throws {
     let fixture = try SessionFixture()
     defer { fixture.clean() }
-    let app = fixture.app(transports: [])
+    let diagnostics = DiagnosticLog(directory: fixture.root.appendingPathComponent("diagnostics"))
+    let app = fixture.app(transports: [], diagnostics: diagnostics)
     for dark in [false, true] {
-        try await renderView(AppSettingsView(app: app), name: "build24-settings-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 560, height: 340))
+        try await renderView(AppSettingsView(app: app), name: "build28-settings-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 560, height: 620))
     }
     await app.shutdown()
 }

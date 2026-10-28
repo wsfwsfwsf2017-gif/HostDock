@@ -165,6 +165,11 @@ def verify_app(app, data):
     require(any(resources.glob('*.bundle')), '缺少 SwiftPM 资源包')
     manifest = json.loads((resources / 'ResourceManifest.json').read_text())
     require(manifest == resource_hashes(app), '资源缺失或校验不一致')
+    if int(actual['CFBundleVersion']) >= 28:
+        build_info = json.loads((resources / 'BuildInfo.json').read_text())
+        for key, binary in [('mainUUID', app / 'Contents/MacOS/HostDock'), ('cliUUID', app / 'Contents/Helpers/hostdock')]:
+            match = re.search(r'UUID: ([0-9A-Fa-f-]{36}) \(arm64\)', run('xcrun', 'dwarfdump', '--uuid', binary))
+            require(match and match[1].upper() == build_info.get(key), '构建信息与程序 UUID 不一致：' + key)
     binaries = [app / 'Contents/MacOS/HostDock', app / 'Contents/Helpers/hostdock']
     binaries += list(app.rglob('*.dylib'))
     for binary in binaries:

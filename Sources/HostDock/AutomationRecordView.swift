@@ -41,6 +41,8 @@ struct AutomationRecordView: View {
                 AutomationRecordText(text: operationText)
             }
         }.background(DockTheme.surface).foregroundStyle(DockTheme.text)
+            .onAppear { app.diagnostics.record(.recordViewAppeared, id: record.id, layout: app.workspace.layout.rawValue) }
+            .onDisappear { app.diagnostics.record(.recordViewDisappeared, id: record.id) }
     }
     private var operationText: String {
         _ = record.revision

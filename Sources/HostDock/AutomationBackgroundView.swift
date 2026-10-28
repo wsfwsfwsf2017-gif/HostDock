@@ -21,9 +21,14 @@ struct AutomationBackgroundButton: View {
         }.buttonStyle(DockButtonStyle()).help("查看和停止独立的 AI 后台连接")
             .popover(isPresented: $presented, arrowEdge: .bottom) {
                 AutomationBackgroundView(app: app, controller: controller, openAuthentication: { profile in
+                    app.diagnostics.record(.popoverDismissRequested, id: profile.id, critical: true)
                     presented = false
                     app.showProfile(profile, authenticating: true)
-                }, openRecord: { record in presented = false; app.showRecord(record) })
+                }, openRecord: { record in
+                    app.diagnostics.record(.viewRecordClicked, id: record.id, relatedID: record.header.sessionID, critical: true)
+                    app.diagnostics.record(.popoverDismissRequested, id: record.id, critical: true)
+                    presented = false; app.showRecord(record)
+                }).onDisappear { app.diagnostics.record(.popoverDisappeared) }
             }
     }
 }

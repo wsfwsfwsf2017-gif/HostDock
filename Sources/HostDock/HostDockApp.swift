@@ -11,7 +11,12 @@ struct HostDockApp: App {
     @ViewState private var windowReady = false
 
     init() {
-        let model = AppModel()
+        let diagnostics = DiagnosticLog(directory: DiagnosticLog.defaultDirectory,
+            run: .current(launchDate: NSRunningApplication.current.launchDate ?? Date()), systemLogging: true)
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { _ in
+            diagnostics.markNormalExit()
+        }
+        let model = AppModel(diagnostics: diagnostics)
         NSApplication.shared.appearance = model.appearance.nsAppearance
         _model = StateObject(wrappedValue: model)
     }
@@ -63,6 +68,10 @@ private struct HostDockCommands: Commands {
             Divider()
             Button(model.selectedSession?.showTerminal == true ? "切换到文件传输" : "切换到终端") { model.selectedSession?.toggleTerminal() }
                 .keyboardShortcut("t", modifiers: [.command, .shift]).disabled(model.selectedSession?.connected != true)
+        }
+        CommandGroup(replacing: .help) {
+            Button("导出诊断包…", action: model.diagnostics.chooseExport)
+                .disabled(model.shuttingDown)
         }
     }
 }

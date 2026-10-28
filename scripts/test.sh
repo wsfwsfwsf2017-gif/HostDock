@@ -11,3 +11,4 @@ if [ -d "$task_tools/../lib/swift/host/plugins/testing" ]; then
 fi
 swift test "${task_flags[@]}"
 python3 scripts/test-release.py
+python3 scripts/test-symbols.py
