@@ -58,7 +58,7 @@ struct BrowserNavigationTests {
         }
         let model = BrowserModel()
         await model.attach(store: LocalFileStore(), home: root.path)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 600), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 600), styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         defer { window.close() }
         func mount() { window.contentView = NSHostingView(rootView: FileBrowserPane(model: model, remote: true, subtitle: "demo")) }
@@ -76,6 +76,7 @@ struct BrowserNavigationTests {
         mount(); try await layout()
         let first = try tree()
         #expect(first.contentView.bounds.minY < 20)
+        #expect(first.verticalScroller?.doubleValue == 0)
         scroll(first, to: 500)
         model.selection = [root.appendingPathComponent("030.txt").path]
         await model.refresh(); try await layout()
@@ -85,6 +86,7 @@ struct BrowserNavigationTests {
         await model.navigate(to: child.path); try await layout()
         #expect(model.path == child.path)
         #expect(first.contentView.bounds.minY < 20)
+        #expect(first.verticalScroller?.doubleValue == 0)
         scroll(first, to: 700)
         await model.navigate(to: child.appendingPathComponent("missing").path); try await layout()
         #expect(model.error != nil && model.path == child.path)

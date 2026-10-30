@@ -197,14 +197,14 @@ private struct FileOutline: NSViewRepresentable {
             if let node = outline.item(atRow: row) as? FileNode, selection.contains(node.entry.path) { indexes.insert(row) }
         }
         outline.selectRowIndexes(indexes, byExtendingSelection: false)
-        scroll.restoreViewport(to: origin)
+        scroll.restoreViewport(to: origin, relativeToTop: firstLoad || !sameDirectory)
         scroll.layoutSubtreeIfNeeded()
         coordinator.reloading = false
     }
 
     static func dismantleNSView(_ scroll: FileScrollView, coordinator: Coordinator) {
         guard coordinator.directoryID == coordinator.model.directoryID else { return }
-        coordinator.model.scrollOrigin = scroll.pendingOrigin ?? scroll.contentView.bounds.origin
+        coordinator.model.scrollOrigin = scroll.savedOrigin
     }
 
     @MainActor
@@ -348,16 +348,25 @@ private final class ActionOutline: NSOutlineView {
 
 private final class FileScrollView: NSScrollView {
     private(set) var pendingOrigin: NSPoint?
-    func restoreViewport(to origin: NSPoint) {
+    private var relativeToTop = false
+    var savedOrigin: NSPoint {
+        if let pendingOrigin, relativeToTop { return pendingOrigin }
+        let origin = pendingOrigin ?? contentView.bounds.origin
+        return NSPoint(x: max(0, origin.x + contentView.contentInsets.left), y: max(0, origin.y + contentView.contentInsets.top))
+    }
+    func restoreViewport(to origin: NSPoint, relativeToTop: Bool) {
         // 重载时可能仍是零尺寸，等表格完成布局后再约束并恢复位置。
         pendingOrigin = origin
+        self.relativeToTop = relativeToTop
         needsLayout = true
     }
     override func layout() {
         super.layout()
         guard let origin = pendingOrigin, contentView.bounds.width > 0, contentView.bounds.height > 0 else { return }
         pendingOrigin = nil
-        let target = contentView.constrainBoundsRect(NSRect(origin: origin, size: contentView.bounds.size))
+        // 表头占据 clip view 的顶部内边距，物理坐标零点会遮住首行。
+        let point = relativeToTop ? NSPoint(x: origin.x - contentView.contentInsets.left, y: origin.y - contentView.contentInsets.top) : origin
+        let target = contentView.constrainBoundsRect(NSRect(origin: point, size: contentView.bounds.size))
         contentView.scroll(to: target.origin)
         reflectScrolledClipView(contentView)
     }
