@@ -21,6 +21,7 @@ final class BrowserModel: ObservableObject {
     @Published var selection: Set<String> = []
     var expandedPaths: Set<String> = []
     var scrollOrigin = NSPoint.zero
+    private(set) var directoryID = UUID()
     private(set) var roots: [FileNode] = []
     private(set) var store: (any FileStore)?
     private var generation = UUID()
@@ -62,6 +63,8 @@ final class BrowserModel: ObservableObject {
         error = nil
         selection = []
         expandedPaths = []
+        scrollOrigin = .zero
+        directoryID = UUID()
         revision += 1
     }
 
@@ -80,7 +83,10 @@ final class BrowserModel: ObservableObject {
             let canonical = try await store.canonicalDirectory(at: requested)
             let entries = try await store.list(at: canonical)
             guard generation == token else { return }
-            if path != canonical { selection = []; expandedPaths = [] }
+            if path != canonical {
+                selection = []; expandedPaths = []; scrollOrigin = .zero
+                directoryID = UUID()
+            }
             path = canonical
             pathDraft = canonical
             roots = entries.map(FileNode.init)

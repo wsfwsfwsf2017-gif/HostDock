@@ -54,7 +54,7 @@ final class SessionModel: ObservableObject, Identifiable {
     @Published var fileFraction = 0.5
     var showTerminal: Bool {
         get { workspaceMode == .terminal }
-        set { workspaceMode = newValue ? .terminal : .files }
+        set { setWorkspaceMode(newValue ? .terminal : .files) }
     }
     @Published private(set) var terminalReady = false
     @Published private(set) var terminalRunning = false
@@ -362,8 +362,13 @@ final class SessionModel: ObservableObject, Identifiable {
     }
 
     func toggleTerminal() {
-        showTerminal.toggle()
-        if showTerminal && connected && !terminalRunning { startTerminal() }
+        setWorkspaceMode(workspaceMode == .terminal ? .files : .terminal)
+    }
+
+    func setWorkspaceMode(_ mode: WorkspaceMode) {
+        guard workspaceMode != mode else { return }
+        workspaceMode = mode
+        if mode == .terminal && connected && !terminalRunning { startTerminal() }
     }
 
     func setVisible(_ value: Bool) {

@@ -97,7 +97,21 @@ struct SessionPanel: View {
                         Button("取消", action: session.cancelTransfer)
                     }.font(.caption).padding(8) }
                 }
-            } else { ContentView(app: session, showConnections: { app.reconnect(session) }).id(session.id) }
+            } else {
+                ContentView(app: session, showConnections: { app.reconnect(session) }).id(session.id)
+                    .onChange(of: session.workspaceMode) { _, mode in
+                        guard let window = session.terminal.view.window else { return }
+                        if mode == .files {
+                            if window.firstResponder === session.terminal.view { window.makeFirstResponder(nil) }
+                        } else {
+                            DispatchQueue.main.async { [weak window, weak responder = window.firstResponder] in
+                                guard let window, session.workspaceMode == .terminal, window.firstResponder === responder else { return }
+                                window.contentView?.layoutSubtreeIfNeeded()
+                                focusWorkspaceSession(app, id: session.id)
+                            }
+                        }
+                    }
+            }
         } else {
             ScrollView {
                 VStack(spacing: 18) {

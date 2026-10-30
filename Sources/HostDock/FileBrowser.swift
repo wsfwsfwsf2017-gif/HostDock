@@ -106,7 +106,7 @@ private struct FileOutline: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(model: model, session: session, remote: remote) }
 
-    func makeNSView(context: Context) -> NSScrollView {
+    func makeNSView(context: Context) -> FileScrollView {
         let outline = ActionOutline()
         outline.makeMenu = { [weak coordinator = context.coordinator] outline in
             guard let coordinator, let actions = coordinator.actions else { return nil }
@@ -168,19 +168,21 @@ private struct FileOutline: NSViewRepresentable {
         return scroll
     }
 
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
+    func updateNSView(_ scroll: FileScrollView, context: Context) {
         let coordinator = context.coordinator
         guard coordinator.revision != model.revision, let outline = coordinator.outline else { return }
         let firstLoad = coordinator.revision < 0
+        let sameDirectory = coordinator.directoryID == model.directoryID
         coordinator.revision = model.revision
+        coordinator.directoryID = model.directoryID
         var expanded = model.expandedPaths
-        for row in 0..<outline.numberOfRows {
+        for row in 0..<outline.numberOfRows where sameDirectory {
             if let node = outline.item(atRow: row) as? FileNode, outline.isItemExpanded(node) {
                 expanded.insert(node.entry.path)
             }
         }
         let selection = model.selection
-        let origin = firstLoad ? model.scrollOrigin : scroll.contentView.bounds.origin
+        let origin = firstLoad || !sameDirectory ? model.scrollOrigin : scroll.contentView.bounds.origin
         coordinator.reloading = true
         outline.reloadData()
         func restore(_ nodes: [FileNode]) {
@@ -195,13 +197,14 @@ private struct FileOutline: NSViewRepresentable {
             if let node = outline.item(atRow: row) as? FileNode, selection.contains(node.entry.path) { indexes.insert(row) }
         }
         outline.selectRowIndexes(indexes, byExtendingSelection: false)
-        scroll.contentView.scroll(to: origin)
-        scroll.reflectScrolledClipView(scroll.contentView)
+        scroll.restoreViewport(to: origin)
+        scroll.layoutSubtreeIfNeeded()
         coordinator.reloading = false
     }
 
-    static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
-        coordinator.model.scrollOrigin = scroll.contentView.bounds.origin
+    static func dismantleNSView(_ scroll: FileScrollView, coordinator: Coordinator) {
+        guard coordinator.directoryID == coordinator.model.directoryID else { return }
+        coordinator.model.scrollOrigin = scroll.pendingOrigin ?? scroll.contentView.bounds.origin
     }
 
     @MainActor
@@ -210,6 +213,7 @@ private struct FileOutline: NSViewRepresentable {
         let actions: FileActions?
         weak var outline: NSOutlineView?
         var revision = -1
+        var directoryID: UUID?
         var reloading = false
         private let dateFormat: DateFormatter = {
             let formatter = DateFormatter()
@@ -343,6 +347,24 @@ private final class ActionOutline: NSOutlineView {
 }
 
 private final class FileScrollView: NSScrollView {
+    private(set) var pendingOrigin: NSPoint?
+    func restoreViewport(to origin: NSPoint) {
+        // 重载时可能仍是零尺寸，等表格完成布局后再约束并恢复位置。
+        pendingOrigin = origin
+        needsLayout = true
+    }
+    override func layout() {
+        super.layout()
+        guard let origin = pendingOrigin, contentView.bounds.width > 0, contentView.bounds.height > 0 else { return }
+        pendingOrigin = nil
+        let target = contentView.constrainBoundsRect(NSRect(origin: origin, size: contentView.bounds.size))
+        contentView.scroll(to: target.origin)
+        reflectScrolledClipView(contentView)
+    }
+    override func scrollWheel(with event: NSEvent) {
+        pendingOrigin = nil
+        super.scrollWheel(with: event)
+    }
     override func tile() {
         super.tile()
         (documentView as? ActionOutline)?.updateColumnVisibility(width: contentSize.width)

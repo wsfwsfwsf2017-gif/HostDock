@@ -16,9 +16,9 @@ struct ContentView: View {
                         .foregroundStyle(DockTheme.secondary).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
                 }.help(app.profile.name + "\n" + app.profile.displayAddress)
                 Spacer()
-                DockTabs(options: WorkspaceMode.allCases.map { ($0, $0.rawValue) }, selection: $app.workspaceMode)
-                    .frame(width: 190).accessibilityLabel("工作区模式")
                 if app.workspaceMode == .files { UploadButton(app: app) }
+                DockTabs(options: WorkspaceMode.allCases.map { ($0, $0.rawValue) }, selection: Binding(get: { app.workspaceMode }, set: app.setWorkspaceMode))
+                    .frame(width: 190).accessibilityLabel("工作区模式")
                 if app.connected {
                     Button("断开", action: app.disconnect).help("断开连接，保留标签以便重连").disabled(app.disconnecting)
                 }
@@ -67,12 +67,6 @@ private struct WorkspacePanes: View {
             }
         }.clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(DockTheme.border))
-            .onChange(of: app.workspaceMode) { _, mode in
-                if mode == .terminal {
-                    app.startTerminal()
-                    app.terminal.view.window?.makeFirstResponder(app.terminal.view)
-                } else { app.terminal.view.window?.makeFirstResponder(nil) }
-            }
     }
 }
 
