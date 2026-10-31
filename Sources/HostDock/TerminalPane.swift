@@ -72,7 +72,12 @@ final class TerminalController: NSObject, TerminalViewDelegate {
     private static let darkColors: [SwiftTerm.Color] = [
         0x1B1D21, 0xE58F91, 0xA5C9A1, 0xD8BE85, 0x8EB6F5, 0xC1A0D8, 0x8EC8CC, 0xCDD2DB,
         0x8B929D, 0xF0ACAE, 0xBCDDB8, 0xEAD2A0, 0xB1CCF9, 0xD7BBE9, 0xAEDDE0, 0xE7EBF0,
-    ].map { SwiftTerm.Color(red8: UInt16(($0 >> 16) & 255), green8: UInt16(($0 >> 8) & 255), blue8: UInt16($0 & 255)) }
+    ].map { (rgb: UInt32) in
+        let red = UInt16((rgb >> 16) & 255)
+        let green = UInt16((rgb >> 8) & 255)
+        let blue = UInt16(rgb & 255)
+        return SwiftTerm.Color(red8: red, green8: green, blue8: blue)
+    }
 
     init(readOnly: Bool = false) {
         super.init()
