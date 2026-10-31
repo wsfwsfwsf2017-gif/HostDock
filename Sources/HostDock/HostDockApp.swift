@@ -55,7 +55,8 @@ private struct HostDockCommands: Commands {
                 let item = NSMenuItem()
                 item.tag = 1
                 NSApp.sendAction(#selector(NSTextView.performFindPanelAction(_:)), to: nil, from: item)
-            }.keyboardShortcut("f", modifiers: .command).disabled(editors.focused == nil && model.selectedRecord == nil)
+            }.keyboardShortcut("f", modifiers: .command)
+                .disabled(editors.focused == nil && model.selectedRecord == nil && model.selectedSession?.showTerminal != true)
         }
         CommandMenu("连接") {
             Button("重新连接当前标签") { if let session = model.selectedSession { model.reconnect(session) } }

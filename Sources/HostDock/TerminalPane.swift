@@ -29,11 +29,21 @@ final class SessionTerminalView: TerminalView {
         onFocus?()
         super.mouseDown(with: event)
     }
+    override func mouseUp(with event: NSEvent) {
+        super.mouseUp(with: event)
+        guard !allowMouseReporting || event.modifierFlags.contains(.shift) || terminalInputStateSnapshot()?.mouseMode == .off,
+              let text = getSelection(), !text.isEmpty else { return }
+        copy(self)
+    }
     override func rightMouseDown(with event: NSEvent) {
+        guard !readOnly else { return }
         window?.makeFirstResponder(self)
         onFocus?()
-        super.rightMouseDown(with: event)
+        paste(self)
     }
+    // 右键整段手势用于本机粘贴，松开和拖动也不能发送给远端。
+    override func rightMouseUp(with event: NSEvent) {}
+    override func rightMouseDragged(with event: NSEvent) {}
     override var hasFocus: Bool {
         get { super.hasFocus }
         set {
