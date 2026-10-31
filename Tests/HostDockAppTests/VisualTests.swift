@@ -19,17 +19,20 @@ func renderTerminalPaletteAndWorkspace() async throws {
     let session = try app.connect(profile: profile, password: "synthetic-only", rememberPassword: true)
     try await waitUntil { session.terminalReady && !session.connecting }
     await app.refreshSavedConnections()
-    let sample = "demo@development:~$ ls -l\r\n"
-        + "drwxr-xr-x  4 demo demo  4096 Oct 28 10:00 \u{1b}[1;34mapps/\u{1b}[0m\r\n"
-        + "drwxr-xr-x  3 demo demo  4096 Oct 28 10:00 \u{1b}[34mbackups/\u{1b}[0m\r\n"
-        + "drwxr-xr-x  2 demo demo  4096 Oct 28 10:00 \u{1b}[94mconfig/\u{1b}[0m\r\n"
-        + "-rwxr-xr-x  1 demo demo  1024 Oct 28 10:00 \u{1b}[1;32mdeploy.sh\u{1b}[0m\r\n"
-        + "lrwxrwxrwx  1 demo demo    12 Oct 28 10:00 \u{1b}[36mcurrent\u{1b}[0m -> \u{1b}[34mapps/latest\u{1b}[0m\r\n"
-        + "\r\n\u{1b}[31mERROR\u{1b}[0m  \u{1b}[33mWARNING\u{1b}[0m  \u{1b}[32mSUCCESS\u{1b}[0m  \u{1b}[35mARCHIVE\u{1b}[0m\r\n\r\n"
-        + (30...37).map { "\u{1b}[\($0)m ANSI \($0) \u{1b}[0m" }.joined() + "\r\n"
-        + (90...97).map { "\u{1b}[\($0)m ANSI \($0) \u{1b}[0m" }.joined() + "\r\n\r\n"
-        + "\u{1b}[30;42m BLACK ON GREEN \u{1b}[0m  \u{1b}[7m REVERSE \u{1b}[0m  \u{1b}[38;2;123;145;167mTRUE COLOR\u{1b}[0m\r\n\r\ndemo@development:~$ "
-    await transport.emit(sample)
+    let normalColors = (30...37).map { "\u{1b}[\($0)m ANSI \($0) \u{1b}[0m" }.joined()
+    let brightColors = (90...97).map { "\u{1b}[\($0)m ANSI \($0) \u{1b}[0m" }.joined()
+    let sample: [String] = [
+        "demo@development:~$ ls -l\r\n",
+        "drwxr-xr-x  4 demo demo  4096 Oct 28 10:00 \u{1b}[1;34mapps/\u{1b}[0m\r\n",
+        "drwxr-xr-x  3 demo demo  4096 Oct 28 10:00 \u{1b}[34mbackups/\u{1b}[0m\r\n",
+        "drwxr-xr-x  2 demo demo  4096 Oct 28 10:00 \u{1b}[94mconfig/\u{1b}[0m\r\n",
+        "-rwxr-xr-x  1 demo demo  1024 Oct 28 10:00 \u{1b}[1;32mdeploy.sh\u{1b}[0m\r\n",
+        "lrwxrwxrwx  1 demo demo    12 Oct 28 10:00 \u{1b}[36mcurrent\u{1b}[0m -> \u{1b}[34mapps/latest\u{1b}[0m\r\n",
+        "\r\n\u{1b}[31mERROR\u{1b}[0m  \u{1b}[33mWARNING\u{1b}[0m  \u{1b}[32mSUCCESS\u{1b}[0m  \u{1b}[35mARCHIVE\u{1b}[0m\r\n\r\n",
+        normalColors, "\r\n", brightColors, "\r\n\r\n",
+        "\u{1b}[30;42m BLACK ON GREEN \u{1b}[0m  \u{1b}[7m REVERSE \u{1b}[0m  \u{1b}[38;2;123;145;167mTRUE COLOR\u{1b}[0m\r\n\r\ndemo@development:~$ "
+    ]
+    await transport.emit(sample.joined())
     try await waitUntil { String(decoding: session.terminal.view.getBufferAsData(), as: UTF8.self).contains("TRUE COLOR") }
     session.remote.selection = [fixture.remote(0) + "/config"]
     for dark in [true, false] {
