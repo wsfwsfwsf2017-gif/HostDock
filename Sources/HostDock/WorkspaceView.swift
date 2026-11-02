@@ -166,6 +166,10 @@ private struct ServerSidebar: View {
         }.buttonStyle(.plain).modifier(DockHoverCursor())
             .contextMenu {
                 Button("打开连接") { open(profile) }
+                Button("复制服务器 IP") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(profile.targetHost, forType: .string)
+                }
                 Button("编辑服务器…") { app.showProfile(profile, editing: true) }.disabled(app.isActive(profile))
                 Button("修改认证…") { app.showProfile(profile, authenticating: true) }.disabled(app.isActive(profile))
                 if catalog.profiles.contains(where: { $0.id == profile.id }) {
