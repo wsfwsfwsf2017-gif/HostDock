@@ -19,6 +19,7 @@ let package = Package(
         .executableTarget(name: "HostDockCLI", dependencies: ["HostDockCore"]),
         .executableTarget(name: "HostDockCheck", dependencies: ["HostDockCore"]),
         .testTarget(name: "HostDockCoreTests", dependencies: ["HostDockCore"]),
+        .testTarget(name: "HostDockCLITests", dependencies: ["HostDockCLI", "HostDockCore"]),
         .testTarget(name: "HostDockAppTests", dependencies: ["HostDock", "HostDockCore"]),
     ],
     swiftLanguageModes: [.v5]

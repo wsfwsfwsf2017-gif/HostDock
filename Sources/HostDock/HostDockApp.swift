@@ -19,6 +19,8 @@ struct HostDockApp: App {
         let model = AppModel(diagnostics: diagnostics)
         NSApplication.shared.appearance = model.appearance.nsAppearance
         _model = StateObject(wrappedValue: model)
+        delegate.model = model
+        Task { await model.automation.restore() }
     }
 
     var body: some Scene {
@@ -30,7 +32,6 @@ struct HostDockApp: App {
         Window("HostDock", id: "main") {
             WorkspaceView(app: model, windowReady: windowReady).frame(minWidth: 1000, minHeight: 620)
                 .background(WorkspaceWindow(maximizeRequest: model.maximizeRequest, onReady: { windowReady = true }))
-                .task { delegate.model = model; await model.automation.restore() }
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: NSScreen.main?.visibleFrame.width ?? 1200, height: NSScreen.main?.visibleFrame.height ?? 800)

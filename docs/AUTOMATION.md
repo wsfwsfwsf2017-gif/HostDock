@@ -1,10 +1,10 @@
 # HostDock 命令行与 AI 接入
 
-CLI 命令协议版本为 1。CLI 控制正在运行的原生应用。保存记录、认证、指纹库和目标路径预约共用；SSH/SFTP、PTY、目录与任务独立运行在后台。
+CLI 命令协议版本为 1。CLI 控制原生应用，必要时自动在后台启动它。保存记录、认证、指纹库和目标路径预约共用；SSH/SFTP、PTY、目录与任务独立运行在后台。
 
 ## 开启与调用
 
-1. 打开 HostDock，在「HostDock → 设置… → AI 与自动化」手动开启「允许 AI 操作 HostDock」。首次安装默认关闭，开启偏好会保留；关闭应用后不再监听。
+1. 首次使用打开 HostDock，在「HostDock → 设置… → AI 与自动化」手动开启「允许 AI 操作 HostDock」。默认关闭，CLI 不会自动开启授权；开启偏好会保留。
 2. 使用应用包内的 CLI，无须修改 PATH 或安装全局工具：
 
 ```sh
@@ -13,6 +13,8 @@ HOSTDOCK_CLI='/Applications/HostDock.app/Contents/Helpers/hostdock'
 "$HOSTDOCK_CLI" profiles list
 "$HOSTDOCK_CLI" sessions list
 ```
+
+应用未运行时，CLI 会后台启动 `/Applications/HostDock.app`，不显示窗口或切换焦点；正在运行时直接复用，不改变可见工作区。最多等待接口就绪 15 秒，之后才发送一次业务请求。启动失败、授权关闭或请求取消会返回 JSON 错误；不会自动重试可能已执行的命令。`--help` 和命令解析失败时不启动应用。应用退出后停止监听，下一次有效调用会按需启动，不安装常驻服务。
 
 以下 `<记录ID>` 来自 `profiles list`；`<会话ID>` 必须使用 `connect` 返回的后台 ID，或从 `sessions list` 获取。列表只包含后台会话，人工 Tab 的 ID 会返回 `SESSION_SCOPE_MISMATCH`。
 

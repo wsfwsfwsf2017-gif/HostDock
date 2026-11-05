@@ -23,7 +23,7 @@ struct HostDockCLI {
       files download --session <会话ID> --source <远端绝对路径> [--source ...] --destination <本机目录>
       cancel --request <本次请求ID>
     
-    先启动 HostDock，在“设置 → AI 与自动化”中开启“允许 AI 操作 HostDock”。
+    首次使用需在 HostDock 设置中手动开启“允许 AI 操作 HostDock”。之后调用会按需后台启动应用，不显示窗口或抢焦点。
     connect 每次新建独立后台连接；sessions list 只列后台会话。
     --session 必须使用后台 ID；人工标签 ID 返回 SESSION_SCOPE_MISMATCH。
     连接仅使用已保存的认证；指纹和冲突需用户主动打开“AI 后台”处理。
@@ -52,6 +52,7 @@ struct HostDockCLI {
                     input = text
                 }
                 let request = try ControlRequest.parse(args, input: input); id = request.id
+                try await ApplicationStartup.prepare()
                 let response = try await ControlClient.call(request)
                 emit(response)
                 if request.command == "exec", case .object(let result) = response.result,
@@ -59,7 +60,7 @@ struct HostDockCLI {
                 return response.ok ? 0 : 1
             } catch {
                 let failure = Task.isCancelled ? ControlFailure("CANCELLED", "本次请求已取消。")
-                    : error as? ControlFailure ?? ControlFailure("APP_UNAVAILABLE", "无法访问 HostDock，请启动应用并在设置中开启「允许 AI 操作 HostDock」。")
+                    : error as? ControlFailure ?? ControlFailure("APP_UNAVAILABLE", "无法访问 HostDock 自动化接口，请检查应用运行状态及「允许 AI 操作 HostDock」设置；不要自动重试可能已执行的操作。")
                 emit(ControlResponse(id, error: failure))
                 return Task.isCancelled ? 130 : 1
             }
