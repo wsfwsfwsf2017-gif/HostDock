@@ -46,7 +46,7 @@ final class FileActions: NSObject {
         let generation = session.connectionGeneration
         func add(_ title: String, enabled: Bool = true, _ operation: @escaping () async throws -> Void) {
             let item = NSMenuItem(title: title, action: #selector(invoke(_:)), keyEquivalent: "")
-            item.target = self; item.isEnabled = ready && enabled
+            item.target = self; item.isEnabled = (title == "刷新" ? browser.store != nil && !browser.loading : ready) && enabled
             item.representedObject = Action { [weak self] in
                 Task { @MainActor in
                     do {
@@ -116,7 +116,7 @@ final class FileActions: NSObject {
         let sourceRemote = sourceRemote ?? remote
         guard let from = source ?? browser.store,
               let destination = (toRemote ? session.remote : session.local).store else { throw HostDockError("两侧目录尚未就绪。") }
-        let destinationDirectory = try await destination.canonicalDirectory(at: directory)
+        let destinationDirectory = try FilePath.normalize(directory)
         let entries = FilePath.topLevelSelection(entries)
         let targets = try entries.map { try FilePath.join(destinationDirectory, name: $0.name) }
         if sourceRemote == toRemote {
@@ -131,7 +131,10 @@ final class FileActions: NSObject {
         let remotePaths = (toRemote ? targets : []) + (cut && sourceRemote ? entries.map(\.path) : [])
         let localPaths = (!toRemote ? targets : []) + (cut && !sourceRemote ? entries.map(\.path) : [])
         let outcome = CopyOutcome()
-        try await session.runFileOperation(cut ? "移动" : "复制", localPaths: localPaths, remotePaths: remotePaths) { [session] in
+        try await session.runFileOperation((cut ? "移动" : sourceRemote == toRemote ? "复制" : toRemote ? "上传" : "下载") + " · " + Self.summary(entries), localPaths: localPaths, remotePaths: remotePaths) { [session] in
+            guard try await destination.canonicalDirectory(at: destinationDirectory) == destinationDirectory else {
+                throw HostDockError("目标目录已经改变，请重新选择目标。")
+            }
             try await TransferEngine().transfer(entries, from: from, to: destination, directory: destinationDirectory,
                 onConflict: { await session.resolve($0) }, onEvent: {
                     await outcome.record($0)
@@ -148,11 +151,14 @@ final class FileActions: NSObject {
         }
     }
 
+    static func summary(_ entries: [FileEntry]) -> String {
+        entries.count == 1 ? (entries.first?.name ?? "") : "\(entries.count) 个项目"
+    }
     private func create(directory: String, isDirectory: Bool) async throws {
         guard let store = browser.store,
               let name = await input(isDirectory ? "新建文件夹" : "新建文件", value: isDirectory ? "新建文件夹" : "新文件.txt") else { return }
         let path = try FilePath.join(directory, name: name)
-        try await session.runFileOperation("新建", localPaths: remote ? [] : [path], remotePaths: remote ? [path] : []) {
+        try await session.runFileOperation("新建 · " + name, localPaths: remote ? [] : [path], remotePaths: remote ? [path] : []) {
             guard try await store.metadata(at: path) == nil else { throw HostDockError("同名项目已存在。") }
             if isDirectory { try await store.createDirectory(at: path) }
             else { try await TransferEngine().replaceContents(Data(), at: path, in: store, expectedDigest: nil) }
@@ -162,7 +168,7 @@ final class FileActions: NSObject {
         guard let store = browser.store, let name = await input("重命名", value: entry.name) else { return }
         let target = try FilePath.join(FilePath.parent(entry.path), name: name)
         if target == entry.path { return }
-        try await session.runFileOperation("重命名", localPaths: remote ? [] : [entry.path, target], remotePaths: remote ? [entry.path, target] : []) {
+        try await session.runFileOperation("重命名 · " + entry.name, localPaths: remote ? [] : [entry.path, target], remotePaths: remote ? [entry.path, target] : []) {
             try await store.move(from: entry.path, to: target)
         }
     }
@@ -177,8 +183,13 @@ final class FileActions: NSObject {
             guard await response(alert) == .alertSecondButtonReturn else { return }
         }
         let remote = remote
-        try await session.runFileOperation("删除", localPaths: remote ? [] : entries.map(\.path), remotePaths: remote ? entries.map(\.path) : []) {
-            if remote { try await FileOperations.remove(entries, in: store) }
+        let session = session
+        try await session.runFileOperation("删除 · " + Self.summary(entries), localPaths: remote ? [] : entries.map(\.path), remotePaths: remote ? entries.map(\.path) : []) {
+            if remote {
+                try await FileOperations.remove(entries, in: store, onProgress: { path, finished in
+                    await session.recordDeletion(path: path, finished: finished)
+                })
+            }
             else {
                 for entry in entries {
                     try Task.checkCancellation()
@@ -192,7 +203,7 @@ final class FileActions: NSObject {
         guard let entry = entries.first, let store = browser.store,
               let current = try await store.metadata(at: entry.path) else { return }
         guard let window, let mode = await FilePropertiesView.present(current, count: entries.count, parent: window) else { return }
-        try await session.runFileOperation("修改权限", localPaths: remote ? [] : [current.path], remotePaths: remote ? [current.path] : []) {
+        try await session.runFileOperation("修改权限 · " + current.name, localPaths: remote ? [] : [current.path], remotePaths: remote ? [current.path] : []) {
             try await store.setPermissions(mode, at: current.path)
         }
     }

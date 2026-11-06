@@ -56,8 +56,10 @@ public struct TransferEngine: Sendable {
             try Task.checkCancellation()
             try await commit(temporary, to: path, replacing: original, in: store, retainBackup: true, onEvent: { _ in })
         } catch {
-            try? await writer.close()
-            try? await store.removeFile(at: temporary)
+            await Task {
+                try? await writer.close()
+                try? await store.removeFile(at: temporary)
+            }.value
             throw error
         }
     }
@@ -159,12 +161,15 @@ public struct TransferEngine: Sendable {
             try Task.checkCancellation()
             try await commit(temporary, to: target, replacing: existing, in: destination, onEvent: onEvent)
         } catch {
-            try? await reader.close()
-            try? await writer?.close()
-            if ownsTemporary {
-                do { try await destination.removeFile(at: temporary) }
-                catch { await onEvent(.warning("临时文件未能清理，请在连接恢复后检查：\(temporary)")) }
-            }
+            let closingWriter = writer
+            await Task {
+                try? await reader.close()
+                try? await closingWriter?.close()
+                if ownsTemporary {
+                    do { try await destination.removeFile(at: temporary) }
+                    catch { await onEvent(.warning("临时文件未能清理，请在连接恢复后检查：\(temporary)")) }
+                }
+            }.value
             throw error
         }
     }
@@ -194,6 +199,10 @@ public struct TransferEngine: Sendable {
                         try await store.move(from: backup, to: target)
                     }
                 } catch {
+                    if originalError is FileConnectionFailure {
+                        await onEvent(.warning("连接中断，原文件备份可能仍在 \(backup)，请核对后处理。"))
+                        throw originalError
+                    }
                     throw HostDockError("提交失败；原文件备份可能仍在 \(backup)。请恢复连接后检查，勿删除备份。")
                 }
             }

@@ -453,3 +453,82 @@ func automationUsesRealSavedProfilesInTemporaryDirectories() async throws {
 private func runLiveRequest(_ socket: URL, _ arguments: [String]) async throws -> ControlResponse {
     try await ControlClient.call(ControlRequest.parse(arguments), url: socket)
 }
+
+@MainActor
+@Test(.enabled(if: ProcessInfo.processInfo.environment["HOSTDOCK_FILE_RECOVERY_CHECK"] == "1"))
+func savedConnectionRepairsFilesAndExecutesVisibleQueue() async throws {
+    _ = NSApplication.shared
+    NSApp.setActivationPolicy(.prohibited)
+    let identifier = try #require(ProcessInfo.processInfo.environment["HOSTDOCK_FILE_RECOVERY_PROFILE"])
+    let document = try FileConnectionStorage(url: FileConnectionStorage.defaultURL).load()
+    var profile = try #require(document.profiles.first { $0.id.uuidString == identifier })
+    let trusted = try #require(UserDefaults(suiteName: "app.hostdock.mac")?.dictionary(forKey: "trustedHostKeys"))
+    let previous = UserDefaults.standard.object(forKey: "trustedHostKeys")
+    UserDefaults.standard.set(trusted, forKey: "trustedHostKeys")
+    defer {
+        if let previous { UserDefaults.standard.set(previous, forKey: "trustedHostKeys") }
+        else { UserDefaults.standard.removeObject(forKey: "trustedHostKeys") }
+    }
+    let fixture = try SessionFixture(); defer { fixture.clean() }
+    profile.localStartDirectory = fixture.profiles[0].localStartDirectory
+    let catalog = ConnectionCatalog(storage: MemoryConnectionStorage(document))
+    let transport = LiveSessionConnection()
+    let session = SessionModel(profile: profile, catalog: catalog, credentials: ReadOnlySavedCredentials(), connection: transport)
+    let root = "/tmp/hostdock-check-" + UUID().uuidString
+    var created = false
+    do {
+        session.connect(profile: profile, password: nil, rememberPassword: true)
+        try await waitForCompany { await MainActor.run { !session.connecting || session.hostTrustRequest != nil } }
+        try #require(session.hostTrustRequest == nil && session.connected && session.remote.directoryReady, "保存连接或主机指纹未通过，停止验收")
+        try await waitForCompany { await MainActor.run { session.terminalReady } }
+        let terminal = session.terminal.view, token = session.connectionGeneration
+        _ = try await transport.ssh.repairFiles() // Deliberately retire only this test connection's old SFTP channel.
+        await session.remote.refresh()
+        try #require(session.connected && session.filesHealthy && session.remote.error == nil)
+        #expect(session.terminal.view === terminal && session.terminalReady && session.connectionGeneration == token)
+        await transport.ssh.disconnect()
+        await session.checkFileHealth()
+        #expect(!session.connectionIndicatorHealthy)
+        await session.remote.refresh()
+        try #require(session.connected && session.filesHealthy && session.remote.error == nil)
+        #expect(session.terminal.view === terminal && session.connectionGeneration == token)
+        try await waitForCompany { await MainActor.run { session.terminalReady } }
+        let store = try #require(session.remote.store)
+        try await store.createDirectory(at: root); created = true
+        await session.remote.navigate(to: root)
+        let contents = Data(repeating: 0x35, count: 2 * 1024 * 1024)
+        let local = try #require(profile.localStartDirectory)
+        for (name, data) in [("large.bin", contents), ("small-a.txt", Data("A".utf8)), ("small-b.txt", Data("B".utf8))] {
+            try data.write(to: URL(fileURLWithPath: local).appendingPathComponent(name))
+        }
+        let entries = try await LocalFileStore().list(at: local).filter { ["large.bin", "small-a.txt", "small-b.txt"].contains($0.name) }
+        try await FileActions(session: session, remote: false).copy(entries, toRemote: true, directory: root, cut: false)
+        let digest = try await FileOperations.digest(at: root + "/large.bin", in: store)
+        #expect(digest == SHA256.hash(data: contents).map { String(format: "%02x", $0) }.joined())
+        let gate = TestGate()
+        var tasks: [Task<Void, Error>] = []
+        let baseline = session.fileQueue.jobs.count
+        for (index, name) in ["large.bin", "small-a.txt", "small-b.txt"].enumerated() {
+            let entry = try #require(try await store.metadata(at: root + "/" + name))
+            tasks.append(Task {
+                try await session.runFileOperation("验证删除 · " + name, remotePaths: [entry.path]) {
+                    if index == 0 { try await gate.wait() }
+                    try await FileOperations.remove([entry], in: store, onProgress: { await session.recordDeletion(path: $0, finished: $1) })
+                }
+            })
+            try await waitUntil { session.fileQueue.jobs.count == baseline + index + 1 }
+        }
+        #expect(session.fileQueue.jobs.suffix(3).map(\.state) == [.running, .queued, .queued])
+        await gate.open()
+        for task in tasks { try await task.value }
+        #expect(session.fileQueue.jobs.suffix(3).allSatisfy { $0.state == .succeeded })
+        #expect(try await store.list(at: root).isEmpty)
+        try await store.removeEmptyDirectory(at: root); created = false
+        await session.shutdown()
+        print("PASS 独立连接的文件通道恢复、SSH 自动恢复、临时文件 SHA-256 校验、三项 FIFO 删除和清理")
+    } catch {
+        if created, let store = session.remote.store { try? await FileOperations.remove([FileEntry(path: root, kind: .directory)], in: store) }
+        await session.shutdown()
+        throw error
+    }
+}

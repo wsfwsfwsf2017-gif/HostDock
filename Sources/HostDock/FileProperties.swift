@@ -97,7 +97,7 @@ struct FilePropertiesView: View {
 extension SessionModel {
     func downloadSelection(entries: [FileEntry]? = nil, window: NSWindow? = nil) async {
         let entries = entries ?? remote.selectedEntries
-        guard connected, !transferring, !entries.isEmpty, let parent = window ?? NSApp.keyWindow else { return }
+        guard connected, !entries.isEmpty, let parent = window ?? NSApp.keyWindow else { return }
         let generation = connectionGeneration
         let panel = NSOpenPanel()
         panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false

@@ -36,23 +36,26 @@ public enum FileOperations {
         } catch { try? await reader.close(); throw error }
     }
 
-    public static func remove(_ entries: [FileEntry], in store: any FileStore) async throws {
+    public static func remove(_ entries: [FileEntry], in store: any FileStore,
+                              onProgress: @Sendable (String, Bool) async -> Void = { _, _ in }) async throws {
         for selected in FilePath.topLevelSelection(entries) {
             try Task.checkCancellation()
             guard selected.path != "/", let entry = try await store.metadata(at: selected.path) else {
                 throw HostDockError("不能删除根目录或不存在的项目。")
             }
+            await onProgress(entry.path, false)
             if entry.kind == .directory {
                 guard try await store.canonicalDirectory(at: entry.path) == entry.path else { throw HostDockError("目录已指向其他路径，已停止删除。") }
                 let children = try await store.list(at: entry.path)
                 for child in children {
                     guard try FilePath.join(entry.path, name: child.name) == child.path else { throw HostDockError("子路径非法，已停止删除。") }
                 }
-                try await remove(children, in: store)
+                try await remove(children, in: store, onProgress: onProgress)
                 try await store.removeEmptyDirectory(at: entry.path)
             } else if entry.kind == .file || entry.kind == .symbolicLink {
                 try await store.removeFile(at: entry.path)
             } else { throw HostDockError("不删除特殊文件：\(entry.path)") }
+            await onProgress(entry.path, true)
         }
     }
 

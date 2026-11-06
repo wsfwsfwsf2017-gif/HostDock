@@ -19,6 +19,7 @@ extension DiagnosticOperation {
 
 extension DiagnosticFailure {
     static func classify(_ error: Error) -> Self {
+        if error is FileConnectionFailure { return .network }
         if error is CancellationError { return .cancelled }
         if let ssh = error as? SSHConnectionFailure {
             switch ssh {

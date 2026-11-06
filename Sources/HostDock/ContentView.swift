@@ -9,7 +9,7 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Circle().fill(app.connected ? Color.green : Color.secondary.opacity(0.5)).frame(width: 6, height: 6)
+                Circle().fill(app.connectionIndicatorHealthy ? Color.green : Color.secondary.opacity(0.5)).frame(width: 6, height: 6)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(app.profile.name).font(.system(size: 14, weight: .semibold)).lineLimit(1)
                     Text(app.profile.displaySubtitle).font(.system(size: 11, design: .monospaced))
@@ -19,19 +19,27 @@ struct ContentView: View {
                 if app.workspaceMode == .files { UploadButton(app: app) }
                 DockTabs(options: WorkspaceMode.allCases.map { ($0, $0.rawValue) }, selection: Binding(get: { app.workspaceMode }, set: app.setWorkspaceMode))
                     .frame(width: 190).accessibilityLabel("工作区模式")
+                if app.recoveringFiles { Text("正在恢复连接…").font(.caption).foregroundStyle(DockTheme.secondary) }
                 if app.connected {
                     Button("断开", action: app.disconnect).help("断开连接，保留标签以便重连").disabled(app.disconnecting)
                 }
             }.buttonStyle(DockButtonStyle()).padding(.horizontal, 20).frame(height: 66).background(DockTheme.surface)
             Rectangle().fill(DockTheme.border).frame(height: 1)
+            if let request = app.hostTrustRequest {
+                HostTrustCard(request: request, trust: app.trustHost).padding(12)
+                Button("取消连接", action: app.cancelConnection)
+            }
+            if app.needsAuthentication {
+                Button("修改认证…", action: showConnections).buttonStyle(DockButtonStyle()).padding(8)
+            }
             if let notice = app.credentialNotice { DockNotice(text: notice).padding([.top, .horizontal], 12) }
             if let conflict = app.conflictRequest {
                 FileConflictCard(app: app, conflict: conflict).padding([.top, .horizontal], 12)
             }
             WorkspacePanes(app: app, showConnections: showConnections).padding(12)
-            if app.transferring || app.logs.contains(where: { $0.warning }) {
+            if !app.fileQueue.jobs.isEmpty {
                 Rectangle().fill(DockTheme.border).frame(height: 1)
-                TransferStatus(app: app)
+                FileQueuePanel(session: app, queue: app.fileQueue)
             }
         }
         .background(DockTheme.background).foregroundStyle(DockTheme.text).tint(DockTheme.accent)
@@ -80,41 +88,8 @@ private struct UploadButton: View {
         Button { app.transfer(upload: true) } label: {
             Label("上传", systemImage: "arrow.right").fixedSize()
         }.buttonStyle(DockButtonStyle())
-            .disabled(!app.connected || app.connecting || app.transferring || app.disconnecting || local.selection.isEmpty || !local.directoryReady || !remote.directoryReady)
+            .disabled(!app.connected || app.connecting || app.disconnecting || local.selection.isEmpty || !local.directoryReady || !remote.directoryReady)
             .help("上传到服务器当前目录：\(remote.path)").accessibilityLabel("上传")
-    }
-}
-
-private struct TransferStatus: View {
-    @ObservedObject var app: SessionModel
-    @ViewState private var showLog = false
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: app.transferring ? "arrow.left.arrow.right" : "checkmark.circle")
-                .foregroundStyle(.secondary)
-            Text(app.transferLabel).font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
-            Spacer(minLength: 10)
-            if app.transferring {
-                ProgressView(value: app.progress).frame(width: 110)
-                Button("取消", action: app.cancelTransfer).controlSize(.small)
-            }
-            if !app.logs.isEmpty {
-                Button { showLog.toggle() } label: {
-                    Label("记录 \(app.logs.count)", systemImage: "list.bullet.rectangle")
-                }.controlSize(.small)
-                    .popover(isPresented: $showLog) {
-                        ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 9) {
-                                ForEach(app.logs) { log in
-                                    Text(log.text).font(.system(size: 11, design: .monospaced))
-                                        .foregroundStyle(log.warning ? Color.orange : Color.primary)
-                                        .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
-                                }
-                            }.padding(15)
-                        }.frame(width: 560, height: 310)
-                    }
-            }
-        }.foregroundStyle(DockTheme.secondary).padding(.horizontal, 20).frame(height: 38).background(DockTheme.surface)
     }
 }
 

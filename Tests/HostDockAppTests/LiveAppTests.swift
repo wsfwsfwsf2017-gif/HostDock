@@ -36,7 +36,7 @@ func liveApplicationConnectsTransfersAndKeepsTerminalSession() async throws {
         if let originalTrust { UserDefaults.standard.set(originalTrust, forKey: "trustedHostKeys") }
         else { UserDefaults.standard.removeObject(forKey: "trustedHostKeys") }
     }
-    var remote: RemoteFileStore?
+    var remote: (any FileStore)?
     var remoteCreated = false
     do {
         try FileManager.default.createDirectory(at: source.appendingPathComponent("空目录"), withIntermediateDirectories: true)
@@ -66,7 +66,7 @@ func liveApplicationConnectsTransfersAndKeepsTerminalSession() async throws {
         #expect(catalog.recent.count == 1)
         #expect(await credentials.saves == 0)
         #expect(model.hostTrustRequest == nil)
-        remote = try #require(model.remote.store as? RemoteFileStore)
+        remote = try #require(model.remote.store)
         let store = try #require(remote)
         remoteCreated = true
         try await store.createDirectory(at: remoteRoot)
@@ -242,7 +242,7 @@ private func checkConcurrentLiveSessions(host: String, username: String, passwor
     let models = profiles.map { SessionModel(profile: $0, catalog: catalog, credentials: credentials, reservations: reservations) }
     let a = models[0], b = models[1]
     let gateA = TestGate(), gateB = TestGate()
-    var remoteA: RemoteFileStore?, remoteB: RemoteFileStore?
+    var remoteA: (any FileStore)?, remoteB: (any FileStore)?
     var remoteCreated = false
     defer { try? FileManager.default.removeItem(at: root) }
     do {
@@ -268,8 +268,8 @@ private func checkConcurrentLiveSessions(host: String, username: String, passwor
         }
         try #require(a.connected && b.connected, "两条 SSH 连接未同时就绪")
         #expect(!a.remote.directoryReady && !b.remote.directoryReady)
-        remoteA = try #require(a.remote.store as? RemoteFileStore)
-        remoteB = try #require(b.remote.store as? RemoteFileStore)
+        remoteA = try #require(a.remote.store)
+        remoteB = try #require(b.remote.store)
         let storeA = try #require(remoteA), storeB = try #require(remoteB)
         remoteCreated = true
         try await storeA.createDirectory(at: remoteRoot)
@@ -366,7 +366,7 @@ private func eventually(_ condition: () -> Bool) async throws {
     throw HostDockError("应用流程等待超时。")
 }
 
-private func clean(_ store: RemoteFileStore, root: String) async throws {
+private func clean(_ store: any FileStore, root: String) async throws {
     let prefix = "/tmp/hostdock-check-"
     guard root.hasPrefix(prefix), UUID(uuidString: String(root.dropFirst(prefix.count))) != nil else {
         throw HostDockError("拒绝清理非测试目录。")

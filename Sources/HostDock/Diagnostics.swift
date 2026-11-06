@@ -3,6 +3,7 @@ import Foundation
 import OSLog
 
 enum DiagnosticEvent: String, Codable, Sendable {
+    case fileQueued, fileExecuting
     case runStarted, runEnded, operationStarted, operationFinished, cancelled
     case viewRecordClicked, popoverDismissRequested, popoverDisappeared
     case recordTabCreateRequested, recordTabCreated, recordTabLocated, recordTabClosed, recordViewAppeared, recordViewDisappeared
@@ -10,6 +11,7 @@ enum DiagnosticEvent: String, Codable, Sendable {
 }
 
 enum DiagnosticOperation: String, Codable, Sendable {
+    case fileRefresh, fileRecovery, fileProbe
     case connect, disconnect, terminal, recordLoad, transfer, fileOperation, editorSave
     case automationConnect, automationExec, automationTerminal, automationFiles, automationClose, automationCancel
 }

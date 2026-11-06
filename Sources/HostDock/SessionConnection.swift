@@ -5,6 +5,8 @@ protocol SessionConnection: Sendable {
     func connect(host: String, port: Int, username: String, authentication: SSHAuthentication,
                  verifyHostKey: @escaping @Sendable (HostKeyChallenge) async -> Bool,
                  onDisconnect: @escaping @Sendable () async -> Void) async throws -> (store: any FileStore, home: String)
+    func checkFiles() async throws
+    func repairFiles() async throws -> (store: any FileStore, home: String)
     func execute(_ command: String, timeout: Double) async throws -> SSHCommandResult
     func disconnect() async
     func runTerminal(columns: Int, rows: Int, onReady: @escaping @Sendable () async -> Void,
@@ -22,6 +24,10 @@ struct LiveSessionConnection: SessionConnection {
                                           verifyHostKey: verifyHostKey, onDisconnect: onDisconnect)
         return (result.store, result.home)
     }
+    func checkFiles() async throws { try await ssh.checkFiles() }
+    func repairFiles() async throws -> (store: any FileStore, home: String) {
+        let result = try await ssh.repairFiles(); return (result.store, result.home)
+    }
     func execute(_ command: String, timeout: Double) async throws -> SSHCommandResult { try await ssh.execute(command, timeout: timeout) }
     func disconnect() async { await ssh.disconnect() }
     func runTerminal(columns: Int, rows: Int, onReady: @escaping @Sendable () async -> Void,
@@ -33,6 +39,8 @@ struct LiveSessionConnection: SessionConnection {
 }
 
 extension SessionConnection {
+    func checkFiles() async throws {}
+    func repairFiles() async throws -> (store: any FileStore, home: String) { throw FileConnectionFailure.closed }
     func execute(_ command: String, timeout: Double) async throws -> SSHCommandResult {
         throw ControlFailure("EXEC_UNAVAILABLE", "当前连接未提供命令通道。")
     }

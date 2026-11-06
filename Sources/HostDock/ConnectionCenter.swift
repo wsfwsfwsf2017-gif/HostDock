@@ -86,9 +86,13 @@ struct SessionPanel: View {
     @ObservedObject var session: SessionModel
     var compact = false
     var body: some View {
-        if session.connected {
+        if session.connected || !session.remote.path.isEmpty {
             if compact {
                 VStack(spacing: 0) {
+                    if let request = session.hostTrustRequest {
+                        HostTrustCard(request: request, trust: session.trustHost)
+                        Button("取消连接", action: session.cancelConnection)
+                    }
                     if let conflict = session.conflictRequest { FileConflictCard(app: session, conflict: conflict) }
                     TerminalPane(app: session, showHeader: false)
                     if session.transferring { HStack {
@@ -98,7 +102,10 @@ struct SessionPanel: View {
                     }.font(.caption).padding(8) }
                 }
             } else {
-                ContentView(app: session, showConnections: { app.reconnect(session) }).id(session.id)
+                ContentView(app: session, showConnections: {
+                    if session.needsAuthentication { app.showConnection(session, authenticating: true) }
+                    else { Task { await session.remote.refresh() } }
+                }).id(session.id)
                     .onChange(of: session.workspaceMode) { _, mode in
                         guard let window = session.terminal.view.window else { return }
                         if mode == .files {

@@ -66,8 +66,22 @@ final class SessionModel: ObservableObject, Identifiable {
     @Published private(set) var logs: [TransferLog] = []
     private var connectionTask: Task<Void, Never>?
     private var cancellationTask: Task<Void, Never>?
-    private var transferTask: Task<Void, Never>?
-    private var fileOperationID: UUID?
+    let fileQueue = FileOperationQueue()
+    @Published var queueExpanded = true
+    @Published var queueHeight: CGFloat = 180
+    @Published private(set) var recoveringFiles = false
+    @Published private(set) var filesHealthy = true
+    private var sessionStore: SessionFileStore?
+    private var recoveryTask: Task<Void, Error>?
+    private var healthTask: Task<Void, Never>?
+    private var refreshTask: Task<Void, Never>?
+    private var wakeObserver: NSObjectProtocol?
+    private var recoveringFullConnection = false
+    private var executingFileOperation = false
+    private var probingFiles = false
+    private var probeTask: Task<Void, Never>?
+    var connectionIndicatorHealthy: Bool { connected && filesHealthy && !recoveringFiles }
+
     private var terminalTask: Task<Void, Never>?
     private var terminalInputTask: Task<Void, Never>?
     private var attempt = UUID()
@@ -79,20 +93,23 @@ final class SessionModel: ObservableObject, Identifiable {
     @Published var automationRequests = 0
     private var conflictDecision: CheckedContinuation<ConflictDecision, Never>?
 
-    var busy: Bool { connecting || disconnecting || transferring }
+    var busy: Bool { connecting || disconnecting || transferring || recoveringFiles }
     var connectionGeneration: UUID { session }
     var verifiedRemoteIdentity: String { profile.endpoint.identity + ":" + (acceptedFingerprint ?? "") }
-    var needsAttention: Bool { hostTrustRequest != nil || conflictRequest != nil || passwordRequired || connectionError != nil }
+    var needsAttention: Bool { fileQueue.paused || hostTrustRequest != nil || conflictRequest != nil || passwordRequired || connectionError != nil }
     var needsAuthentication: Bool {
         passwordRequired || connectionFailure == .authentication || connectionFailure == .keyFile
             || connectionFailure == .keyFormat || connectionFailure == .keyPassphrase
     }
     var status: String {
+        if recoveringFiles { return "正在恢复连接" }
+        if !filesHealthy && connected { return "文件连接不可用" }
         if disconnecting { return "正在断开" }
         if hostTrustRequest != nil { return "确认指纹" }
         if conflictRequest != nil { return "确认同名文件" }
         if waitingForTarget { return "等待目标释放" }
-        if transferring { return "传输中" }
+        if fileQueue.paused { return "操作待处理" }
+        if transferring { return "文件操作中" }
         if connecting { return "正在连接" }
         if connected { return "已连接" }
         if passwordRequired { return profile.authenticationKind == .rsaKey ? "需要解锁密钥" : "需要密码" }
@@ -110,6 +127,24 @@ final class SessionModel: ObservableObject, Identifiable {
         self.credentials = credentials
         self.connection = connection
         self.reservations = reservations
+        remote.prepareRead = { [weak self] in
+            guard let self else { throw CancellationError() }
+            if !self.connecting && self.sessionStore != nil && (!self.connected || !self.filesHealthy) {
+                try await self.recoverFiles(); return true
+            }
+            return false
+        }
+        remote.recoverRead = { [weak self] error in
+            guard let self, error is FileConnectionFailure else { return false }
+            try await self.recoverFiles()
+            return true
+        }
+        fileQueue.changed = { [weak self] in
+            guard let self else { return }
+            self.transferring = self.fileQueue.hasWork
+        }
+        fileQueue.cancellingActive = { [weak self] in self?.finishConflict(.cancel) }
+        fileQueue.finished = { [weak self] in self?.scheduleFileRefresh() }
     }
 
     func connect(profile requested: ConnectionProfile, password supplied: String?, rememberPassword: Bool,
@@ -159,18 +194,22 @@ final class SessionModel: ObservableObject, Identifiable {
                 )
                 guard attempt == token, !Task.isCancelled else { return }
                 session = UUID()
+                filesHealthy = true
+                let storeToken = session
+                let bound = SessionFileStore(result.store) { [weak self] error in await self?.fileAccessFailed(error, generation: storeToken) }
+                sessionStore = bound
                 remoteLabel = profile.name
                 await local.attach(store: localStore, home: NSHomeDirectory(), initialDirectory: profile.localStartDirectory)
                 guard attempt == token, !Task.isCancelled else { return }
-                await remote.attach(store: result.store, home: result.home, initialDirectory: profile.remoteStartDirectory)
+                await remote.attach(store: bound, home: result.home, initialDirectory: profile.remoteStartDirectory)
                 guard attempt == token, !Task.isCancelled else { return }
                 if profile.connectionMode == .jumpServer, remote.path == "/", remote.error == nil,
                    let asset = remote.roots.first(where: { $0.entry.kind == .directory && $0.entry.name == profile.targetHost }) {
-                    await remote.attach(store: result.store, home: result.home, initialDirectory: asset.entry.path)
+                    await remote.attach(store: bound, home: result.home, initialDirectory: asset.entry.path)
                     guard attempt == token, !Task.isCancelled else { return }
                     if remote.error == nil,
                        let account = remote.roots.first(where: { $0.entry.kind == .directory && $0.entry.name == profile.targetUsername }) {
-                        await remote.attach(store: result.store, home: result.home, initialDirectory: account.entry.path)
+                        await remote.attach(store: bound, home: result.home, initialDirectory: account.entry.path)
                         guard attempt == token, !Task.isCancelled else { return }
                     }
                 }
@@ -200,6 +239,7 @@ final class SessionModel: ObservableObject, Identifiable {
                     diagnosticFailure = nil
                     connected = true
                     if !validationOnly && origin == .interactive { terminal.reset(); startTerminal() }
+                    startHealthChecks()
                     onConnected?(id)
                 }
             } catch {
@@ -214,6 +254,132 @@ final class SessionModel: ObservableObject, Identifiable {
                 }
             }
         }
+    }
+
+    private func fileAccessFailed(_ error: Error, generation: UUID? = nil) {
+        if let generation, generation != session { return }
+        filesHealthy = false
+        remote.markUnavailable(error)
+        connectionError = error.localizedDescription
+    }
+
+    func checkFileHealth() async {
+        guard connected, !connecting, !disconnecting, !recoveringFiles, !fileQueue.hasWork, !remote.loading, !probingFiles else { return }
+        let token = session
+        probingFiles = true
+        let task = Task { [self] in
+            let span = diagnostics.begin(.fileProbe, id: id, origin: diagnosticOrigin)
+            defer { probingFiles = false; probeTask = nil }
+            do { try await connection.checkFiles(); diagnostics.finish(span) }
+            catch {
+                diagnostics.finish(span, failure: .classify(error))
+                guard session == token, !Task.isCancelled else { return }
+                if error is FileConnectionFailure { fileAccessFailed(error) }
+            }
+        }
+        probeTask = task
+        await task.value
+    }
+
+    private func startHealthChecks() {
+        healthTask?.cancel()
+        healthTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
+                guard let self else { return }
+                await self.checkFileHealth()
+            }
+        }
+        if wakeObserver == nil {
+            wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in await self?.checkFileHealth() }
+            }
+        }
+    }
+
+    func recoverFiles() async throws {
+        if let probeTask { await probeTask.value }
+        if let recoveryTask {
+            return try await withTaskCancellationHandler { try await recoveryTask.value } onCancel: { recoveryTask.cancel() }
+        }
+        guard !disconnecting, let sessionStore else { throw FileConnectionFailure.closed }
+        // Never replace a channel underneath a mutation or its cleanup.
+        guard !executingFileOperation else { throw HostDockError("文件操作尚未完成，请等待清理后刷新。") }
+        let token = session
+        recoveringFiles = true; filesHealthy = false
+        let task = Task { [self] in
+            let span = diagnostics.begin(.fileRecovery, id: id, origin: diagnosticOrigin)
+            var failure: Error?
+            defer {
+                recoveringFiles = false
+                recoveryTask = nil
+                diagnostics.finish(span, failure: failure.map(DiagnosticFailure.classify))
+            }
+            do {
+                var repaired: (store: any FileStore, home: String)?
+                if connected {
+                    do { repaired = try await connection.repairFiles() }
+                    catch is CancellationError { throw CancellationError() }
+                    catch {
+                        if Task.isCancelled { throw CancellationError() }
+                        guard error is FileConnectionFailure else { throw error }
+                    }
+                }
+                if repaired == nil {
+                    recoveringFullConnection = true
+                    defer { recoveringFullConnection = false; connecting = false }
+                    try Task.checkCancellation()
+                    attempt = UUID()
+                    let attemptID = attempt
+                    terminalInputTask?.cancel(); terminalTask?.cancel()
+                    terminal.ready = false; terminalReady = false; terminalRunning = false; terminal.onInput = nil
+                    await connection.disconnect()
+                    await terminalTask?.value
+                    terminalTask = nil
+                    connected = false
+                    let original = profile
+                    let resolved = try catalog.resolve(original)
+                    guard resolved.profile.endpoint == original.endpoint else { throw HostDockError("保存的服务器身份已变化，请手动重新连接。") }
+                    var secret: String?
+                    for account in catalog.authenticationAccounts(profile: original, access: resolved.access) {
+                        if let value = try await credentials.read(account: account) { secret = value; break }
+                    }
+                    let authentication: SSHAuthentication
+                    if original.authenticationKind == .password {
+                        guard let secret else { passwordRequired = true; throw HostDockError("未保存连接认证，请通过修改认证补全。") }
+                        authentication = .password(secret)
+                    } else {
+                        if original.keyRequiresPassphrase && secret == nil { passwordRequired = true; throw SSHConnectionFailure.keyPassphrase }
+                        authentication = .rsaKey(path: original.privateKeyPath ?? "", passphrase: secret)
+                    }
+                    try Task.checkCancellation()
+                    connecting = true
+                    repaired = try await connection.connect(host: original.endpoint.host, port: original.endpoint.port,
+                        username: original.endpoint.username, authentication: authentication,
+                        verifyHostKey: { [weak self] challenge in await self?.verify(challenge, attempt: attemptID) ?? false },
+                        onDisconnect: { [weak self] in await self?.connectionDropped(attempt: attemptID) })
+                    try Task.checkCancellation()
+                    guard session == token, !disconnecting else { throw CancellationError() }
+                    connected = true
+                    if origin == .interactive { terminal.message("连接已恢复，未重放之前的命令。"); startTerminal() }
+                }
+                try Task.checkCancellation()
+                guard session == token, !disconnecting, let repaired else { throw CancellationError() }
+                await sessionStore.replace(repaired.store)
+                filesHealthy = true; connected = true
+                remote.markAvailable()
+                connectionError = nil; connectionFailure = nil; passwordRequired = false
+                fileQueue.resumeWhenSafe()
+            } catch {
+                failure = error
+                fileAccessFailed(error)
+                connectionFailure = error as? SSHConnectionFailure
+                finishHostTrust(false)
+                throw error
+            }
+        }
+        recoveryTask = task
+        try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
 
     private func persistAuthentication(profile: ConnectionProfile, access: JumpServerAccessProfile?, secret: String?,
@@ -259,6 +425,7 @@ final class SessionModel: ObservableObject, Identifiable {
     }
 
     func cancelConnection() {
+        if recoveringFiles { recoveryTask?.cancel(); finishHostTrust(false); return }
         guard connecting, !connected else { return }
         diagnostics.record(.cancelled, id: id, operation: .connect, origin: diagnosticOrigin, critical: true)
         finishHostTrust(false)
@@ -300,6 +467,7 @@ final class SessionModel: ObservableObject, Identifiable {
 
     private func connectionDropped(attempt token: UUID) {
         guard attempt == token else { return }
+        if recoveringFullConnection { return }
         diagnostics.record(.operationFinished, id: id, operation: .disconnect, origin: diagnosticOrigin, failure: .network)
         attempt = UUID()
         connectionTask?.cancel()
@@ -307,18 +475,18 @@ final class SessionModel: ObservableObject, Identifiable {
         connecting = false
         connectionError = "连接已断开，请重新连接。"
         finishHostTrust(false)
-        session = UUID()
+        if origin == .automation || sessionStore == nil { session = UUID(); remote.clear() }
         connected = false
-        remote.clear()
+        filesHealthy = false
+        remote.markUnavailable(FileConnectionFailure.closed)
         remoteLabel = "连接已断开"
-        cancelTransfer()
+        if origin == .automation { fileQueue.cancelAll() }
         terminal.ready = false
         terminalReady = false
         terminalRunning = false
         terminal.onInput = nil
         terminalInputTask?.cancel()
         terminalTask?.cancel()
-        terminalTask = nil
         terminal.message("连接已断开，请重新连接。")
         onConnectionLost?()
     }
@@ -339,16 +507,24 @@ final class SessionModel: ObservableObject, Identifiable {
     }
 
     private func closeSession() async {
+        healthTask?.cancel(); healthTask = nil
+        probeTask?.cancel(); await probeTask?.value
+        refreshTask?.cancel(); refreshTask = nil
+        recoveryTask?.cancel()
+        if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver); self.wakeObserver = nil }
         finishHostTrust(false)
         attempt = UUID()
         connectionTask?.cancel()
         connectionTask = nil
-        cancelTransfer()
+        fileQueue.cancelAll()
+        finishConflict(.cancel)
         terminal.ready = false
         terminalReady = false
         terminal.onInput = nil
         terminalInputTask?.cancel()
-        await transferTask?.value
+        await fileQueue.drain()
+        _ = await recoveryTask?.result
+        sessionStore = nil
         session = UUID()
         await connection.disconnect()
         terminalTask?.cancel()
@@ -439,69 +615,26 @@ final class SessionModel: ObservableObject, Identifiable {
     }
 
     func transfer(upload: Bool) {
-        guard connected, !transferring, !disconnecting, local.directoryReady, remote.directoryReady,
-              let source = upload ? local.store : remote.store,
-              let destination = upload ? remote.store : local.store else { return }
+        guard connected, !disconnecting, local.directoryReady, remote.directoryReady else { return }
         let browser = upload ? local : remote
         let entries = browser.selectedEntries
+        let directory = (upload ? remote : local).path
         guard !entries.isEmpty else { return }
-        let target = upload ? remote : local
-        let directory = target.path
+        let token = session
         transferring = true
-        completed = 0
-        skipped = 0
-        progress = 0
-        logs = [TransferLog(text: upload ? "上传至 \(remoteLabel):\(directory)" : "下载至本机：\(directory)", warning: false)]
-        lastProgressUpdate = .distantPast
-        transferLabel = upload ? "准备上传…" : "准备下载…"
-        let requestID = UUID()
-        let endpoint = profile.endpoint
-        let identities = upload
-            ? ["remote:\(endpoint.host):\(endpoint.port)"] + (acceptedFingerprint.map { ["hostkey:\($0)"] } ?? [])
-            : ["local"]
-        waitingForTarget = true
-        transferTask = Task { [self] in
-            let diagnosticSpan = diagnostics.begin(.transfer, id: id, origin: diagnosticOrigin)
-            var diagnosticFailure: DiagnosticFailure?
-            defer { diagnostics.finish(diagnosticSpan, failure: diagnosticFailure, count: completed) }
-            var acquired = false
-            do {
-                let canonical = try await destination.canonicalDirectory(at: directory)
-                let paths = try FilePath.topLevelSelection(entries).flatMap { entry in
-                    try identities.map { try TransferDestination(storage: $0, path: FilePath.join(canonical, name: entry.name)) }
-                }
-                try await reservations.acquire(paths, id: requestID)
-                acquired = true
-                waitingForTarget = false
-                try Task.checkCancellation()
-                try await TransferEngine().transfer(entries, from: source, to: destination, directory: canonical,
-                    onConflict: { [weak self] conflict in await self?.resolve(conflict) ?? .cancel },
-                    onEvent: { [weak self] event in await self?.record(event) })
-                transferLabel = "传输完成 · 完成 \(completed) 项" + (skipped > 0 ? "，跳过 \(skipped) 项" : "")
-                progress = 1
-            } catch is CancellationError {
-                diagnosticFailure = .cancelled
-                transferLabel = "已取消 · 已完成的项目保留"
-            } catch {
-                diagnosticFailure = .classify(error)
-                transferLabel = "传输失败，请查看记录"
-                logs.append(TransferLog(text: error.localizedDescription, warning: true))
-            }
-            if acquired { await reservations.release(requestID) }
-            waitingForTarget = false
-            finishConflict(.cancel)
-            // 用户可能已切换目录，刷新其当前目录，不改变任务捕获的目标。
-            await target.refresh()
-            transferring = false
-            transferTask = nil
+        Task {
+            defer { transferring = fileQueue.hasWork }
+            guard token == session, connected, !disconnecting else { return }
+            do { try await FileActions(session: self, remote: !upload).copy(entries, toRemote: upload, directory: directory, cut: false) }
+            catch { if !(error is CancellationError) { logs.append(TransferLog(text: error.localizedDescription, warning: true)) } }
         }
     }
 
     func cancelTransfer() {
-        guard transferring else { return }
-        diagnostics.record(.cancelled, id: id, operation: .transfer, origin: diagnosticOrigin, critical: true)
+        guard let id = fileQueue.activeID else { fileQueue.cancelWaiting(); return }
+        diagnostics.record(.cancelled, id: self.id, operation: .transfer, origin: diagnosticOrigin, critical: true)
         finishConflict(.cancel)
-        transferTask?.cancel()
+        fileQueue.cancel(id)
         transferLabel = "正在取消并清理临时文件…"
     }
 
@@ -510,67 +643,79 @@ final class SessionModel: ObservableObject, Identifiable {
         return await withCheckedContinuation { continuation in
             conflictDecision = continuation
             conflictRequest = conflict
+            fileQueue.update(.confirmation)
         }
     }
 
     func runFileOperation(_ label: String, localPaths: [String] = [], remotePaths: [String] = [],
                           operation: @escaping @Sendable () async throws -> Void) async throws {
-        let diagnosticSpan = diagnostics.begin(.fileOperation, id: id, origin: diagnosticOrigin)
-        do {
-            let token = session
-            while transferring {
-                try Task.checkCancellation()
-                guard connected, !disconnecting, session == token else { throw HostDockError("原会话已断开，操作未执行。") }
-                try await Task.sleep(for: .milliseconds(80))
-            }
-            guard connected, !disconnecting, session == token else { throw HostDockError("请先连接原服务器。") }
-            let remoteIdentities = ["remote:\(profile.endpoint.host):\(profile.endpoint.port)"]
-                + (acceptedFingerprint.map { ["hostkey:\($0)"] } ?? [])
-            let paths = try localPaths.map { try TransferDestination(storage: "local", path: $0) }
-                + remotePaths.flatMap { path in try remoteIdentities.map { try TransferDestination(storage: $0, path: path) } }
-            transferring = true
-            transferLabel = label
-            completed = 0; skipped = 0
-            logs = [TransferLog(text: label, warning: false)]
-            progress = 0
+        let token = session
+        let identity = verifiedRemoteIdentity
+        diagnostics.record(.fileQueued, id: id, operation: .fileOperation, origin: diagnosticOrigin)
+        try await fileQueue.submit(label) { [self] in
+            let span = diagnostics.begin(.fileOperation, id: id, origin: diagnosticOrigin)
+            var failure: Error?
+            defer { diagnostics.finish(span, failure: failure.map(DiagnosticFailure.classify)) }
+            var acquired = false
             let requestID = UUID()
-            fileOperationID = requestID
-            try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                    transferTask = Task { [self] in
-                        var acquired = false
-                        var failure: Error?
-                        do {
-                            waitingForTarget = true
-                            try await reservations.acquire(paths, id: requestID)
-                            acquired = true; waitingForTarget = false
-                            try Task.checkCancellation()
-                            try await operation()
-                            transferLabel = "\(label)完成"; progress = 1
-                        } catch {
-                            failure = error
-                            transferLabel = error is CancellationError ? "已取消 · 已完成的项目保留" : "\(label)失败"
-                            logs.append(TransferLog(text: error.localizedDescription, warning: true))
-                        }
-                        if acquired { await reservations.release(requestID) }
-                        waitingForTarget = false
-                        finishConflict(.cancel)
-                        await local.refresh(); await remote.refresh()
-                        transferring = false; transferTask = nil
-                        if fileOperationID == requestID { fileOperationID = nil }
-                        if let failure { continuation.resume(throwing: failure) }
-                        else { continuation.resume() }
-                    }
+            do {
+                if let refreshTask { refreshTask.cancel(); await refreshTask.value; self.refreshTask = nil }
+                if let probeTask { await probeTask.value }
+                try Task.checkCancellation()
+                guard !disconnecting, session == token else { throw HostDockError("原会话已变化，操作未执行。") }
+                if !connected || !filesHealthy { try await recoverFiles() }
+                guard verifiedRemoteIdentity == identity, session == token else { throw HostDockError("服务器身份已变化，操作未执行。") }
+                let identities = ["remote:\(profile.endpoint.host):\(profile.endpoint.port)"]
+                    + (acceptedFingerprint.map { ["hostkey:\($0)"] } ?? [])
+                let paths = try localPaths.map { try TransferDestination(storage: "local", path: $0) }
+                    + remotePaths.flatMap { path in try identities.map { try TransferDestination(storage: $0, path: path) } }
+                transferLabel = label; completed = 0; skipped = 0; progress = 0
+                lastProgressUpdate = .distantPast
+                logs = [TransferLog(text: label, warning: false)]
+                waitingForTarget = true; fileQueue.update(.waiting)
+                try await reservations.acquire(paths, id: requestID)
+                acquired = true; waitingForTarget = false
+                try Task.checkCancellation()
+                guard session == token, !disconnecting else { throw HostDockError("原会话已变化，操作未执行。") }
+                if !connected || !filesHealthy { try await recoverFiles() }
+                guard verifiedRemoteIdentity == identity else { throw HostDockError("服务器身份已变化，操作未执行。") }
+                fileQueue.update(.running)
+                diagnostics.record(.fileExecuting, id: id, operation: .fileOperation, origin: diagnosticOrigin)
+                executingFileOperation = true
+                try await operation()
+                transferLabel = label.hasPrefix("上传") || label.hasPrefix("下载") ? "传输完成 · 完成 \(completed) 项" : "\(label)完成"
+                progress = 1
+            } catch {
+                failure = error
+                if !executingFileOperation && (!connected || !filesHealthy), !Task.isCancelled, !disconnecting, session == token {
+                    failure = FileJobDeferred(reason: "操作尚未发送，等待恢复连接。" + error.localizedDescription)
                 }
-            } onCancel: {
-                Task { @MainActor [weak self] in
-                    if self?.fileOperationID == requestID { self?.cancelTransfer() }
-                }
+                transferLabel = error is CancellationError ? "已取消 · 已完成的项目保留" : "\(label)失败"
+                logs.append(TransferLog(text: error.localizedDescription, warning: true))
+                if error is FileConnectionFailure { fileAccessFailed(error) }
             }
-            diagnostics.finish(diagnosticSpan)
-        } catch {
-            diagnostics.finish(diagnosticSpan, failure: .classify(error))
-            throw error
+            if acquired { await reservations.release(requestID) }
+            executingFileOperation = false
+            waitingForTarget = false; finishConflict(.cancel)
+            if let failure { throw failure }
+        }
+    }
+
+    func recordDeletion(path: String, finished: Bool) {
+        if finished { completed += 1 }
+        fileQueue.update(detail: "已完成 \(completed) 项 · " + (finished ? "已删除 " : "等待服务器确认 · ") + URL(fileURLWithPath: path).lastPathComponent)
+    }
+
+    private func scheduleFileRefresh() {
+        guard !fileQueue.hasWork, !disconnecting, connected else { return }
+        refreshTask?.cancel()
+        refreshTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+            guard let self, !self.fileQueue.hasWork, !self.disconnecting else { return }
+            let span = self.diagnostics.begin(.fileRefresh, id: self.id, origin: self.diagnosticOrigin)
+            await self.local.refresh()
+            await self.remote.refresh()
+            self.diagnostics.finish(span)
         }
     }
 
@@ -578,10 +723,12 @@ final class SessionModel: ObservableObject, Identifiable {
         let continuation = conflictDecision
         conflictDecision = nil
         conflictRequest = nil
+        fileQueue.update(.running)
         continuation?.resume(returning: decision)
     }
 
     func record(_ event: TransferEvent) {
+        defer { fileQueue.update(detail: logs.last(where: { $0.warning })?.text ?? transferLabel, progress: progress) }
         switch event {
         case let .progress(path, bytes, total):
             if bytes != total && Date().timeIntervalSince(lastProgressUpdate) < 0.1 { return }

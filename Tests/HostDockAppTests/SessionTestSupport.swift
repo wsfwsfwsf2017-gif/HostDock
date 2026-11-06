@@ -83,6 +83,22 @@ actor FakeSessionConnection: SessionConnection {
         try Task.checkCancellation()
         return executionResult
     }
+    private var fileFailure: FileConnectionFailure?
+    private var repairedStore: (any FileStore)?
+    private(set) var repairs = 0
+    private(set) var probes = 0
+    func configureFiles(failure: FileConnectionFailure?, repair: (any FileStore)? = nil) { fileFailure = failure; repairedStore = repair }
+    func checkFiles() async throws {
+        probes += 1
+        if let fileFailure { throw fileFailure }
+        guard connected else { throw FileConnectionFailure.closed }
+    }
+    func repairFiles() async throws -> (store: any FileStore, home: String) {
+        repairs += 1
+        guard connected, let repairedStore else { throw FileConnectionFailure.closed }
+        fileFailure = nil
+        return (repairedStore, home)
+    }
     private var output: AsyncStream<Data>.Continuation?
     private var disconnectHandler: (@Sendable () async -> Void)?
 

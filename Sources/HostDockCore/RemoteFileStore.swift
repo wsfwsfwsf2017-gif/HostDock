@@ -7,8 +7,14 @@ public actor RemoteFileStore: FileStore {
     private var knownHiddenPaths: Set<String> = []
     public init(client: SFTPClient) { self.client = client }
 
+    public func probe() async throws {
+        _ = try await sftpRequest(client, timeout: 10) { try await self.client.getRealPath(atPath: ".") }
+    }
+
+    public func close() async { try? await client.close() }
+
     public func canonicalDirectory(at path: String) async throws -> String {
-        let realPath = try await sftpRequest(client) { try await client.getRealPath(atPath: path) }
+        let realPath = try await sftpRequest(client) { try await self.client.getRealPath(atPath: path) }
         guard try await metadata(at: realPath)?.kind == .directory else {
             throw HostDockError("远端目录不存在或无法访问：\(path)")
         }
@@ -16,7 +22,7 @@ public actor RemoteFileStore: FileStore {
     }
 
     public func list(at path: String) async throws -> [FileEntry] {
-        let packets = try await sftpRequest(client) { try await client.listDirectory(atPath: path) }
+        let packets = try await sftpRequest(client) { try await self.client.listDirectory(atPath: path) }
         var entries: [FileEntry] = []
         for component in packets.flatMap(\.components) {
             if component.filename == "." || component.filename == ".." { continue }
@@ -34,7 +40,7 @@ public actor RemoteFileStore: FileStore {
     public func metadata(at path: String) async throws -> FileEntry? {
         do {
             let value = entry(path: path, attributes: try await sftpRequest(client) {
-                try await client.getAttributes(at: path, followSymlinks: false)
+                try await self.client.getAttributes(at: path, followSymlinks: false)
             })
             if value.name.hasPrefix(".") { knownHiddenPaths.insert(path) }
             return value
@@ -46,7 +52,7 @@ public actor RemoteFileStore: FileStore {
     }
 
     public func createDirectory(at path: String) async throws {
-        try await sftpRequest(client) { try await client.createDirectory(atPath: path) }
+        try await sftpRequest(client) { try await self.client.createDirectory(atPath: path) }
         guard try await metadata(at: path)?.kind == .directory else {
             throw HostDockError("远端目录创建失败，请检查权限：\(path)")
         }
@@ -56,7 +62,7 @@ public actor RemoteFileStore: FileStore {
         guard let original = try await metadata(at: from), try await metadata(at: to) == nil else {
             throw HostDockError("远端改名失败：源文件不存在或目标已被占用。\(to)")
         }
-        try await sftpRequest(client) { try await client.rename(at: from, to: to) }
+        try await sftpRequest(client) { try await self.client.rename(at: from, to: to) }
         // Citadel 0.12.1 does not inspect RENAME's status packet; verify both paths.
         guard try await metadata(at: from) == nil, let moved = try await metadata(at: to),
               moved.kind == original.kind, moved.size == original.size else {
@@ -72,7 +78,7 @@ public actor RemoteFileStore: FileStore {
 
     public func removeFile(at path: String) async throws {
         if try await metadata(at: path) == nil { return }
-        try await sftpRequest(client) { try await client.remove(at: path) }
+        try await sftpRequest(client) { try await self.client.remove(at: path) }
         guard try await metadata(at: path) == nil else {
             throw HostDockError("远端文件清理失败：\(path)")
         }
@@ -81,7 +87,7 @@ public actor RemoteFileStore: FileStore {
     public func removeEmptyDirectory(at path: String) async throws {
         guard path != "/" else { throw HostDockError("不能删除根目录。") }
         guard try await list(at: path).isEmpty else { throw HostDockError("目录非空，保留：\(path)") }
-        try await sftpRequest(client) { try await client.rmdir(at: path) }
+        try await sftpRequest(client) { try await self.client.rmdir(at: path) }
         guard try await metadata(at: path) == nil else { throw HostDockError("空目录清理失败：\(path)") }
     }
 
@@ -91,7 +97,7 @@ public actor RemoteFileStore: FileStore {
         var attributes = SFTPFileAttributes()
         attributes.permissions = permissions
         let change = attributes
-        try await sftpRequest(client) { try await client.setAttributes(at: path, to: change) }
+        try await sftpRequest(client) { try await self.client.setAttributes(at: path, to: change) }
         guard try await metadata(at: path)?.permissions == permissions else { throw HostDockError("远端权限修改未成功或服务端不支持。") }
     }
 
@@ -99,14 +105,14 @@ public actor RemoteFileStore: FileStore {
         guard try await metadata(at: path)?.kind == .file else {
             throw HostDockError("只支持读取普通文件：\(path)")
         }
-        let file = try await sftpRequest(client) { try await client.openFile(filePath: path, flags: .read) }
+        let file = try await sftpRequest(client) { try await self.client.openFile(filePath: path, flags: .read) }
         return RemoteReader(file: file, client: client)
     }
 
     public func createWriter(at path: String) async throws -> any FileWriter {
         var attributes = SFTPFileAttributes()
         attributes.permissions = 0o600
-        let file = try await sftpRequest(client) { try await client.openFile(
+        let file = try await sftpRequest(client) { try await self.client.openFile(
             filePath: path, flags: [.write, .create, .forceCreate], attributes: attributes) }
         return RemoteWriter(file: file, client: client)
     }
@@ -131,12 +137,13 @@ private actor RemoteReader: FileReader {
     var offset: UInt64 = 0
     init(file: SFTPFile, client: SFTPClient) { self.file = file; self.client = client }
     func read(upToCount count: Int) async throws -> Data {
-        let buffer = try await sftpRequest(client) { try await file.read(from: offset, length: UInt32(count)) }
+        let requestOffset = offset
+        let buffer = try await sftpRequest(client) { try await self.file.read(from: requestOffset, length: UInt32(count)) }
         let data = Data(buffer.readableBytesView)
         offset += UInt64(data.count)
         return data
     }
-    func close() async throws { try await sftpRequest(client) { try await file.close() } }
+    func close() async throws { try await sftpRequest(client) { try await self.file.close() } }
 }
 
 private actor RemoteWriter: FileWriter {
@@ -145,25 +152,23 @@ private actor RemoteWriter: FileWriter {
     var offset: UInt64 = 0
     init(file: SFTPFile, client: SFTPClient) { self.file = file; self.client = client }
     func write(_ data: Data) async throws {
-        try await sftpRequest(client) { try await file.write(ByteBuffer(bytes: data), at: offset) }
+        let requestOffset = offset
+        try await sftpRequest(client) { try await self.file.write(ByteBuffer(bytes: data), at: requestOffset) }
         offset += UInt64(data.count)
     }
-    func close() async throws { try await sftpRequest(client) { try await file.close() } }
+    func close() async throws { try await sftpRequest(client) { try await self.file.close() } }
 }
 
-private func sftpRequest<T>(_ client: SFTPClient, _ operation: () async throws -> T) async throws -> T {
-    let start = ContinuousClock.now
-    // Closing the SFTP channel also releases Citadel's outstanding response promises.
-    let deadline = Task {
-        do { try await Task.sleep(for: .seconds(30)); try await client.close() }
-        catch {}
-    }
-    defer { deadline.cancel() }
-    do { return try await operation() }
-    catch {
-        if start.duration(to: .now) >= .seconds(30) {
-            throw HostDockError("SFTP 请求超过 30 秒未响应，文件通道已关闭，请重新连接。")
-        }
+private func sftpRequest<T>(_ client: SFTPClient, timeout: Double = 30,
+                            _ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+    guard client.isActive else { throw FileConnectionFailure.closed }
+    do {
+        return try await fileRequestDeadline(seconds: timeout, abort: { try? await client.close() }, operation: operation)
+    } catch {
+        if error is FileConnectionFailure { throw error }
+        if error is ChannelError || !client.isActive { throw FileConnectionFailure.closed }
+        if let status = error as? SFTPMessage.Status, [6, 7].contains(status.errorCode.rawValue) { throw FileConnectionFailure.closed }
+        if case SFTPError.errorStatus(let status) = error, [6, 7].contains(status.errorCode.rawValue) { throw FileConnectionFailure.closed }
         throw error
     }
 }

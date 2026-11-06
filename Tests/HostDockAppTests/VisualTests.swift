@@ -278,3 +278,28 @@ func renderTabbedSplitWorkspaceAndBackgroundPanel() async throws {
     }
     await controller.setEnabled(false); await app.shutdown()
 }
+
+@MainActor
+@Test(.enabled(if: ProcessInfo.processInfo.environment["HOSTDOCK_RENDER_CHECK"] == "1"))
+func renderFileQueueInBothAppearances() async throws {
+    let fixture = try SessionFixture(); defer { fixture.clean() }
+    let app = fixture.app(transports: [FakeSessionConnection(home: fixture.remote(0))])
+    let session = try app.connect(profile: fixture.profiles[0], password: "synthetic", rememberPassword: true)
+    try await waitUntil { session.connected && !session.connecting }
+    session.workspaceMode = .files
+    let gate = TestGate()
+    let first = Task { try await session.runFileOperation("删除 · archive-large.zip") {
+        await session.recordDeletion(path: "/demo/archive-large.zip", finished: false)
+        try await gate.wait()
+    } }
+    try await waitUntil { session.fileQueue.jobs.count == 1 }
+    let second = Task { try await session.runFileOperation("删除 · notes.txt") {} }
+    try await waitUntil { session.fileQueue.jobs.count == 2 }
+    let third = Task { try await session.runFileOperation("删除 · sample.log") {} }
+    try await waitUntil { session.fileQueue.jobs.count == 3 }
+    for dark in [false, true] {
+        try await renderView(ContentView(app: session), name: "build37-queue-\(dark ? "dark" : "light")", dark: dark, size: NSSize(width: 980, height: 650))
+    }
+    await gate.open(); try await first.value; try await second.value; try await third.value
+    await app.shutdown()
+}

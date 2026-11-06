@@ -25,6 +25,12 @@ final class BrowserModel: ObservableObject {
     private(set) var roots: [FileNode] = []
     private(set) var store: (any FileStore)?
     private var generation = UUID()
+    var prepareRead: (() async throws -> Bool)?
+    var recoverRead: ((Error) async throws -> Bool)?
+    @Published private(set) var available = true
+    func markUnavailable(_ error: Error) { available = false; self.error = error.localizedDescription }
+    func markAvailable() { available = true; error = nil }
+
     private(set) var home = ""
     static var localShortcuts: [(name: String, path: String)] {
         var result = [(name: "主目录", path: NSHomeDirectory())]
@@ -33,7 +39,7 @@ final class BrowserModel: ObservableObject {
         }
         return result
     }
-    var directoryReady: Bool { store != nil && !loading && !path.isEmpty && pathDraft == path }
+    var directoryReady: Bool { store != nil && available && !loading && !path.isEmpty && pathDraft == path }
     func report(_ error: Error) { self.error = error.localizedDescription }
 
     var selectedEntries: [FileEntry] {
@@ -47,6 +53,7 @@ final class BrowserModel: ObservableObject {
 
     func attach(store: any FileStore, home: String, initialDirectory: String? = nil) async {
         clear()
+        available = true
         self.store = store
         self.home = home
         await navigate(to: initialDirectory ?? home)
@@ -80,13 +87,24 @@ final class BrowserModel: ObservableObject {
             else if input.hasPrefix("~/") { requested = home + String(input.dropFirst()) }
             else if input.hasPrefix("/") { requested = input }
             else { requested = (path.isEmpty ? home : path) + "/" + input }
-            let canonical = try await store.canonicalDirectory(at: requested)
-            let entries = try await store.list(at: canonical)
+            let recovered = try await prepareRead?() ?? false
+            var canonical: String
+            var entries: [FileEntry]
+            do {
+                canonical = try await store.canonicalDirectory(at: requested)
+                entries = try await store.list(at: canonical)
+            } catch {
+                guard !recovered, generation == token, !Task.isCancelled, try await recoverRead?(error) == true else { throw error }
+                canonical = try await store.canonicalDirectory(at: requested)
+                entries = try await store.list(at: canonical)
+            }
+            try Task.checkCancellation()
             guard generation == token else { return }
             if path != canonical {
                 selection = []; expandedPaths = []; scrollOrigin = .zero
                 directoryID = UUID()
             }
+            available = true
             path = canonical
             pathDraft = canonical
             roots = entries.map(FileNode.init)
@@ -105,7 +123,13 @@ final class BrowserModel: ObservableObject {
         node.loading = true
         Task {
             do {
-                let entries = try await store.list(at: node.entry.path)
+                let recovered = try await prepareRead?() ?? false
+                let entries: [FileEntry]
+                do { entries = try await store.list(at: node.entry.path) }
+                catch {
+                    guard !recovered, generation == token, !Task.isCancelled, try await recoverRead?(error) == true else { throw error }
+                    entries = try await store.list(at: node.entry.path)
+                }
                 guard generation == token else { return }
                 node.children = entries.map(FileNode.init)
             } catch {

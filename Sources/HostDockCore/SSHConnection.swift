@@ -42,6 +42,7 @@ private final class HostKeyValidator: NIOSSHClientServerAuthenticationDelegate, 
 
 public actor SSHConnection {
     private var client: SSHClient?
+    private var fileStore: RemoteFileStore?
     private var terminalWriter: TTYStdinWriter?
     private var generation = UUID()
     private var commandCapability: Bool?
@@ -93,9 +94,8 @@ public actor SSHConnection {
             Task { await self?.didDisconnect(token: token, notify: onDisconnect) }
         }
         do {
-            var logger = Logger(label: "HostDock.SFTP")
-            logger.logLevel = .critical
-            let store = RemoteFileStore(client: try await connected.openSFTP(logger: logger))
+            let store = try await openFiles(on: connected)
+            fileStore = store
             let home = try await store.canonicalDirectory(at: ".")
             guard token == generation, !Task.isCancelled else { throw CancellationError() }
             return (store, home)
@@ -107,9 +107,40 @@ public actor SSHConnection {
         }
     }
 
+    private func openFiles(on client: SSHClient) async throws -> RemoteFileStore {
+        try await fileRequestDeadline(seconds: 10, abort: { try? await client.close() }) {
+            var logger = Logger(label: "HostDock.SFTP"); logger.logLevel = .critical
+            let channel: SFTPClient
+            do { channel = try await client.openSFTP(logger: logger) }
+            catch { throw FileConnectionFailure.closed }
+            if Task.isCancelled { try? await channel.close(); throw CancellationError() }
+            return RemoteFileStore(client: channel)
+        }
+    }
+
+    public func checkFiles() async throws {
+        guard let client, client.isConnected, let fileStore else { throw FileConnectionFailure.closed }
+        try await fileStore.probe()
+    }
+
+    public func repairFiles() async throws -> (store: RemoteFileStore, home: String) {
+        guard let client, client.isConnected else { throw FileConnectionFailure.closed }
+        let token = generation
+        await fileStore?.close()
+        let replacement = try await openFiles(on: client)
+        do {
+            let home = try await replacement.canonicalDirectory(at: ".")
+            try Task.checkCancellation()
+            guard token == generation else { throw FileConnectionFailure.closed }
+            fileStore = replacement
+            return (replacement, home)
+        } catch { await replacement.close(); throw error }
+    }
+
     public func disconnect() async {
         generation = UUID()
         commandCapability = nil
+        fileStore = nil
         let closing = client
         client = nil
         terminalWriter = nil

@@ -160,7 +160,7 @@ private struct ServerSidebar: View {
             HStack(spacing: 6) {
                 SidebarLabel(name: profile.name, address: profile.displaySubtitle, symbol: "server.rack")
                 Spacer(minLength: 0)
-                if !opened.isEmpty { Circle().fill(opened.contains(where: \.needsAttention) ? Color.orange : opened.contains(where: \.connected) ? Color.green : DockTheme.secondary).frame(width: 5, height: 5) }
+                if !opened.isEmpty { Circle().fill(opened.contains(where: \.needsAttention) ? Color.orange : opened.contains(where: \.connectionIndicatorHealthy) ? Color.green : DockTheme.secondary).frame(width: 5, height: 5) }
             }.padding(11).frame(maxWidth: .infinity, alignment: .leading)
                 .background(opened.contains { $0.id == app.selectedSessionID } ? DockTheme.accent.opacity(0.14) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
         }.buttonStyle(.plain).modifier(DockHoverCursor())
@@ -234,7 +234,7 @@ private struct ConnectionTab: View {
     }
     private var tabLabel: some View {
         HStack(spacing: 7) {
-            Circle().fill(session.needsAttention ? Color.orange : session.connected ? Color.green : DockTheme.secondary).frame(width: 6, height: 6)
+            Circle().fill(session.needsAttention ? Color.orange : session.connectionIndicatorHealthy ? Color.green : DockTheme.secondary).frame(width: 6, height: 6)
             Text(app.tabTitle(session)).font(.system(size: 12, weight: .medium)).lineLimit(1)
                 .frame(maxWidth: 170, alignment: .leading)
             if let region, app.workspace.layout != .single {
@@ -362,7 +362,7 @@ private struct SplitPaneHeader: View {
     let index: Int
     var body: some View {
         HStack(spacing: 8) {
-            Circle().fill(session.needsAttention ? Color.orange : session.connected ? Color.green : DockTheme.secondary).frame(width: 5, height: 5)
+            Circle().fill(session.needsAttention ? Color.orange : session.connectionIndicatorHealthy ? Color.green : DockTheme.secondary).frame(width: 5, height: 5)
             VStack(alignment: .leading, spacing: 3) {
                 Text(app.tabTitle(session)).font(.system(size: 12, weight: .semibold)).lineLimit(1)
                 Text(session.profile.displaySubtitle).font(.system(size: 10, design: .monospaced)).foregroundStyle(DockTheme.secondary).lineLimit(1)
