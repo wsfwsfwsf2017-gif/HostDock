@@ -23,7 +23,7 @@ extension DiagnosticFailure {
         if error is CancellationError { return .cancelled }
         if let ssh = error as? SSHConnectionFailure {
             switch ssh {
-            case .network: return .network
+            case .network, .timeout: return .network
             case .authentication: return .authentication
             case .keyFile: return .keyFile
             case .keyFormat: return .keyFormat

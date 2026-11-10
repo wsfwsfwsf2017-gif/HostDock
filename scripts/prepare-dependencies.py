@@ -107,3 +107,19 @@ if text.count(old) == 4:
 elif text.count(new) != 4 or old in text:
     raise SystemExit('Citadel TTY 可用性与已审查基线不符。')
 print('Citadel TTY macOS 14 可用性补丁已就绪')
+
+# 保留登录超时，但等待用户核对主机指纹期间暂停；失败时关闭未返回的通道。
+import subprocess
+checkout = root / '.build/checkouts/Citadel'
+patch = root / 'packaging/Citadel-LoginDeadline.patch'
+probe = subprocess.run(['git', 'apply', '--reverse', '--check', str(patch)], cwd=checkout, capture_output=True)
+if probe.returncode != 0:
+    subprocess.run(['git', 'apply', '--check', str(patch)], cwd=checkout, check=True)
+    session = checkout / 'Sources/Citadel/ClientSession.swift'
+    mode = session.stat().st_mode
+    try:
+        session.chmod(mode | stat.S_IWUSR)
+        subprocess.run(['git', 'apply', str(patch)], cwd=checkout, check=True)
+    finally:
+        session.chmod(mode)
+print('Citadel 主机指纹确认与登录超时补丁已就绪')

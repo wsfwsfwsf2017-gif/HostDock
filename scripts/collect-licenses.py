@@ -59,3 +59,7 @@ if exec_patch.exists():
 shutil.copyfile(root / 'packaging/Citadel-macOS14.patch', destination / 'citadel/HostDock-macOS14.patch')
 with (destination / 'README.md').open('a') as output:
     output.write('\n## HostDock macOS 14 适配\n\n将仅封装既有 AsyncThrowingStream/NIO 的 TTY 类型与三个通道入口的可用性下限改为 macOS 14，与依赖自身部署目标一致。见 [补丁](citadel/HostDock-macOS14.patch)。\n')
+
+shutil.copyfile(root / 'packaging/Citadel-LoginDeadline.patch', destination / 'citadel/HostDock-LoginDeadline.patch')
+with (destination / 'README.md').open('a') as output:
+    output.write('\n## HostDock 登录超时修正\n\n等待用户确认主机指纹时暂停登录计时，确认后恢复超时；失败时关闭连接。见 [补丁](citadel/HostDock-LoginDeadline.patch)。\n')

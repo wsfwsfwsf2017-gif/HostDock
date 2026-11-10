@@ -30,6 +30,20 @@ class ReleaseChecks(unittest.TestCase):
             subprocess.run(['swift', str(root / 'scripts/create-icon.swift'), str(output)], cwd=tmp, check=True)
             self.assertEqual(output.read_bytes(), png)
 
+    def test_login_deadline_patch_applies_and_reverses_on_pinned_source(self):
+        root = Path(__file__).resolve().parent.parent
+        checkout = root / '.build/checkouts/Citadel'
+        original = subprocess.check_output(['git', 'show', 'HEAD:Sources/Citadel/ClientSession.swift'], cwd=checkout)
+        patch_path = root / 'packaging/Citadel-LoginDeadline.patch'
+        with tempfile.TemporaryDirectory(suffix='.noindex') as tmp:
+            target = Path(tmp) / 'Sources/Citadel/ClientSession.swift'
+            target.parent.mkdir(parents=True); target.write_bytes(original)
+            subprocess.run(['git', 'apply', str(patch_path)], cwd=tmp, check=True)
+            self.assertNotEqual(target.read_bytes(), original)
+            subprocess.run(['git', 'apply', '--reverse', '--check', str(patch_path)], cwd=tmp, check=True)
+            subprocess.run(['git', 'apply', '--reverse', str(patch_path)], cwd=tmp, check=True)
+            self.assertEqual(target.read_bytes(), original)
+
     def fixture_app(self, root, name='HostDock.app'):
         app = root / name
         (app / 'Contents/MacOS').mkdir(parents=True)

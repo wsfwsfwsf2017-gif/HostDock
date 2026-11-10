@@ -159,7 +159,7 @@ def verify_app(app, data):
     for pin in pins:
         folder = resources / 'Licenses' / pin['identity']
         require(folder.is_dir() and any(p.is_file() for p in folder.rglob('*')), '缺少依赖许可：' + pin['identity'])
-    for patch in ('Citadel-LSTAT.patch', 'Citadel-Exec.patch', 'Citadel-macOS14.patch'):
+    for patch in ('Citadel-LSTAT.patch', 'Citadel-Exec.patch', 'Citadel-macOS14.patch', 'Citadel-LoginDeadline.patch'):
         require(digest(ROOT / 'packaging' / patch) == digest(resources / 'Licenses/citadel' / ('HostDock-' + patch.removeprefix('Citadel-'))), '缺少依赖修改声明')
     require('Niels Provos' in (resources / 'Licenses/citadel/Embedded-C-Licenses.txt').read_text(), '缺少内嵌 bcrypt 版权与许可')
     require(any(resources.glob('*.bundle')), '缺少 SwiftPM 资源包')

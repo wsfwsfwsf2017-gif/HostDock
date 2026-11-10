@@ -104,6 +104,7 @@ public struct RSAKeyInfo: Sendable {
 }
 
 public enum SSHConnectionFailure: String, LocalizedError, Sendable {
+    case timeout = "SSH 连接或登录超时，请重试；若持续失败，请检查网络及服务器状态。"
     case network = "网络连接失败，请检查地址、端口及 VPN。"
     case authentication = "服务器拒绝了认证，请通过修改认证更新密码或私钥。"
     case keyFile = "无法读取私钥文件，请检查路径及访问权限。"

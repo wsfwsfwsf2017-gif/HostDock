@@ -77,6 +77,7 @@ public actor SSHConnection {
         let connected: SSHClient
         do { connected = try await SSHClient.connect(to: settings) }
         catch let failure as SSHConnectionFailure { throw failure }
+        catch ChannelError.connectTimeout { throw SSHConnectionFailure.timeout }
         catch let error as SSHClientError {
             switch error {
             case .allAuthenticationOptionsFailed, .unsupportedPasswordAuthentication, .unsupportedPrivateKeyAuthentication:
