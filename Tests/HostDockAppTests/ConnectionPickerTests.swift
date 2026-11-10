@@ -62,6 +62,7 @@ import Testing
 @MainActor
 @Test func closingPickerCancelsOnlyOwnedAttemptAndBackgroundWorkContinues() async throws {
     let fixture = try SessionFixture()
+    let restoreTrust = seedHostKey(fixture.profiles[1].endpoint); defer { restoreTrust() }
     defer { fixture.clean() }
     let gate = TestGate()
     let first = FakeSessionConnection(home: fixture.remote(0), store: GatedFileStore(gate: gate))
@@ -125,6 +126,7 @@ import Testing
 @MainActor
 @Test func quittingWithPickerCancelsHostConfirmationAndClosesExistingTerminal() async throws {
     let fixture = try SessionFixture()
+    let restoreTrust = seedHostKey(fixture.profiles[1].endpoint); defer { restoreTrust() }
     defer { fixture.clean() }
     let app = fixture.app(transports: [FakeSessionConnection(home: fixture.remote(0)),
                                      FakeSessionConnection(home: fixture.remote(1), requiresTrust: true)])

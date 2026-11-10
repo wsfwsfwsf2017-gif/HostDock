@@ -47,13 +47,14 @@ func liveApplicationConnectsTransfersAndKeepsTerminalSession() async throws {
         trust.removeValue(forKey: "[\(host.lowercased())]:22")
         UserDefaults.standard.set(trust, forKey: "trustedHostKeys")
         model.connect(profile: fixtureProfile, password: password, rememberPassword: false)
-        try await eventually { model.hostTrustRequest != nil || model.connectionError != nil }
-        let request = try #require(model.hostTrustRequest, "\(model.connectionError ?? "没有显示主机指纹")")
-        try #require(pins.contains(request.challenge.fingerprint), "应用显示的服务器指纹不匹配。")
-        model.cancelConnection()
-        try await eventually { !model.disconnecting }
-        #expect(!model.connected && catalog.recent.isEmpty)
-        trust[request.challenge.identity] = "synthetic-previous-fingerprint"
+        try await eventually { !model.connecting }
+        try #require(model.connected && model.hostTrustRequest == nil, "首次连接应自动记录主机指纹")
+        let identity = "[\(host.lowercased())]:22"
+        let recorded = UserDefaults.standard.dictionary(forKey: "trustedHostKeys")?[identity] as? String
+        try #require(recorded.map(pins.contains) == true, "首次记录的指纹与已核对值不符")
+        await model.shutdown()
+        #expect(!model.connected && catalog.recent.count == 1)
+        trust[identity] = "synthetic-previous-fingerprint"
         UserDefaults.standard.set(trust, forKey: "trustedHostKeys")
         model.connect(profile: fixtureProfile, password: password, rememberPassword: false)
         try await eventually { model.hostTrustRequest != nil || model.connectionError != nil }
@@ -132,7 +133,7 @@ func liveApplicationConnectsTransfersAndKeepsTerminalSession() async throws {
         await model.shutdown()
         try await AppModel(catalog: catalog, credentials: credentials).removeProfile(saved)
         #expect(try await credentials.read(account: saved.credentialAccount) == nil)
-        print("PASS 首次及变化指纹确认、取消连接、互传 SHA-256、终端命令与尺寸、会话保留、历史去重、成功后保存凭据、读取复用、保存失败仍保持连接、删除凭据及测试目录清理")
+        print("PASS 首次自动记录及变化指纹确认、取消连接、互传 SHA-256、终端命令与尺寸、会话保留、历史去重、成功后保存凭据、读取复用、保存失败仍保持连接、删除凭据及测试目录清理")
         try await checkConcurrentLiveSessions(host: host, username: username, password: password, pins: pins)
         try await prepareEncryptedReconnect(host: host, username: username, password: password, pins: pins)
     } catch {

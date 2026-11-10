@@ -317,7 +317,7 @@ final class AutomationController: ObservableObject {
                 try Task.checkCancellation()
                 if session.connected { return summary(session) }
                 if session.hostTrustRequest != nil || session.passwordRequired {
-                    return .object(["state": .string("needs_user_action"), "sessionId": .string(session.id.uuidString), "message": .string("请在 HostDock 中核对指纹或更新认证，然后通过 sessions list 查看状态。")])
+                    return .object(["state": .string("needs_user_action"), "sessionId": .string(session.id.uuidString), "message": .string("请在 HostDock 中核对变化的指纹或更新认证，然后通过 sessions list 查看状态。")])
                 }
                 if !session.connecting { throw ControlFailure("CONNECT_FAILED", session.connectionError ?? "连接未完成，请在应用中检查认证。") }
                 try await Task.sleep(for: .milliseconds(10))

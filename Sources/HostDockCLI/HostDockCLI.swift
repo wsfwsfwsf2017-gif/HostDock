@@ -26,7 +26,7 @@ struct HostDockCLI {
     首次使用需在 HostDock 设置中手动开启“允许 AI 操作 HostDock”。之后调用会按需后台启动应用，不显示窗口或抢焦点。
     connect 每次新建独立后台连接；sessions list 只列后台会话。
     --session 必须使用后台 ID；人工标签 ID 返回 SESSION_SCOPE_MISMATCH。
-    连接仅使用已保存的认证；指纹和冲突需用户主动打开“AI 后台”处理。
+    连接仅使用已保存的认证；首次指纹自动记录；指纹变化和冲突需用户主动打开“AI 后台”处理。
     终端输入成功仅表示已发送；请通过 terminal read 读取实际结果。
     Ctrl+C 或终止 CLI 只取消本次请求。不会占用人工终端；关闭 AI 开关会取消任务并断开全部后台连接。
     用户“结束并保护”后，该服务器 5 分钟内返回 SERVER_PROTECTED（retryable: false）。必须停止重试并向用户报告；只能由用户提前解除。

@@ -57,6 +57,7 @@ actor FakeSessionConnection: SessionConnection {
     let store: any FileStore
     let home: String
     let requiresTrust: Bool
+    let hostFingerprint: String?
     let connectionGate: TestGate?
     private(set) var connects = 0
     private(set) var usernames: [String] = []
@@ -103,9 +104,9 @@ actor FakeSessionConnection: SessionConnection {
     private var disconnectHandler: (@Sendable () async -> Void)?
 
     init(home: String, store: any FileStore = LocalFileStore(), requiresTrust: Bool = false, connectionGate: TestGate? = nil,
-         failure: SSHConnectionFailure? = nil) {
+         failure: SSHConnectionFailure? = nil, hostFingerprint: String? = nil) {
         self.home = home; self.store = store; self.requiresTrust = requiresTrust; self.connectionGate = connectionGate
-        self.failure = failure
+        self.failure = failure; self.hostFingerprint = hostFingerprint
     }
     func connect(host: String, port: Int, username: String, authentication: SSHAuthentication,
                  verifyHostKey: @escaping @Sendable (HostKeyChallenge) async -> Bool,
@@ -117,7 +118,7 @@ actor FakeSessionConnection: SessionConnection {
         if let failure { throw failure }
         if requiresTrust {
             let accepted = await verifyHostKey(HostKeyChallenge(host: host, port: port, algorithm: "test-only",
-                                                               fingerprint: "SHA256:synthetic-\(host)"))
+                                                               fingerprint: hostFingerprint ?? "SHA256:synthetic-\(host)"))
             guard accepted else { throw HostDockError("测试指纹未获信任") }
         }
         try Task.checkCancellation()

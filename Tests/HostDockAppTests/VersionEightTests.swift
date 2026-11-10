@@ -209,6 +209,7 @@ private func assetFixture(_ index: Int, access: JumpServerAccessProfile) throws 
     let active = try app.connect(profile: profile, password: nil, rememberPassword: true)
     try await waitUntil { active.connected }
     var edited = access; edited.host = "v08-\(UUID()).example"
+    let restoreTrust = seedHostKey(ConnectionEndpoint(host: edited.host, port: edited.port, username: "test")); defer { restoreTrust() }
     let task = Task { try await app.validateAndSaveAccess(edited, asset: profile, password: nil) }
     try await waitUntil { app.accessValidationSession?.hostTrustRequest != nil }
     task.cancel(); _ = await task.result

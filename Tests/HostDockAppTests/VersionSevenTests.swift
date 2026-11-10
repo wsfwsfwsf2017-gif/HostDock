@@ -106,9 +106,10 @@ private func v7Socket() -> URL {
 }
 
 @MainActor
-@Test func automationDoesNotAcceptFingerprintsAndDisablingCancelsPendingConnections() async throws {
+@Test func automationRequiresApprovalForChangedFingerprintsAndDisablingCancelsPendingConnections() async throws {
     let fixture = try SessionFixture(); defer { fixture.clean() }
     var profile = try fixture.profiles[0].validated(); profile.lastValidatedAt = Date()
+    let restoreTrust = seedHostKey(profile.endpoint); defer { restoreTrust() }
     let store = MemoryConnectionStorage(ConnectionDocument(profiles: [profile]))
     let credentials = MemoryCredentialStore()
     try await credentials.save("synthetic-credential", account: profile.credentialAccount)

@@ -117,6 +117,7 @@ struct ConnectionLifecycleTests {
 
     @Test func reconnectHostTrustCanBeCancelledWithoutClosingTheTabOrOpeningAForm() async throws {
         let fixture = try SessionFixture(); defer { fixture.clean() }
+        let restoreTrust = seedHostKey(fixture.profiles[0].endpoint); defer { restoreTrust() }
         let transport = FakeSessionConnection(home: fixture.remote(0), requiresTrust: true)
         let (app, _) = try await lifecycleApp(fixture, transports: [transport])
         try app.openProfile(fixture.profiles[0]); let session = try #require(app.selectedSession)

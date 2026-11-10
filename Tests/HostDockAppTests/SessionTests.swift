@@ -241,11 +241,8 @@ import HostDockCore
 @Test func backgroundTrustAndPasswordRequestsRemainSessionScoped() async throws {
     let fixture = try SessionFixture()
     defer { fixture.clean() }
-    let before = UserDefaults.standard.object(forKey: "trustedHostKeys")
-    defer {
-        if let before { UserDefaults.standard.set(before, forKey: "trustedHostKeys") }
-        else { UserDefaults.standard.removeObject(forKey: "trustedHostKeys") }
-    }
+    let restoreA = seedHostKey(fixture.profiles[0].endpoint), restoreB = seedHostKey(fixture.profiles[1].endpoint)
+    defer { restoreA(); restoreB() }
     let app = fixture.app(transports: [FakeSessionConnection(home: fixture.remote(0), requiresTrust: true), FakeSessionConnection(home: fixture.remote(1), requiresTrust: true)])
     let a = try app.connect(profile: fixture.profiles[0], password: "synthetic", rememberPassword: false)
     let b = try app.connect(profile: fixture.profiles[1], password: "synthetic", rememberPassword: false)

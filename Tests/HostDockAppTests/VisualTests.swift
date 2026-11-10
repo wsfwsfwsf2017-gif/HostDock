@@ -270,6 +270,7 @@ func renderTabbedSplitWorkspaceAndBackgroundPanel() async throws {
     let controller = AutomationController(app: app, defaults: preferences, socketURL: socket)
     await controller.setEnabled(true)
     #expect(controller.enabled)
+    let restoreTrust = seedHostKey(app.sessions[0].profile.endpoint); defer { restoreTrust() }
     let background = try app.connectBackground(profile: app.sessions[0].profile)
     try await waitUntil { background.hostTrustRequest != nil }
     for dark in [false, true] {

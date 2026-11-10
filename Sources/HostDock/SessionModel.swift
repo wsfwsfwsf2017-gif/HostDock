@@ -440,18 +440,24 @@ final class SessionModel: ObservableObject, Identifiable {
 
     private func verify(_ challenge: HostKeyChallenge, attempt token: UUID) async -> Bool {
         guard attempt == token, connecting else { return false }
-        let known = UserDefaults.standard.dictionary(forKey: "trustedHostKeys") as? [String: String] ?? [:]
-        let previous = known[challenge.identity]
+        var known = UserDefaults.standard.dictionary(forKey: "trustedHostKeys") ?? [:]
+        let previous = known[challenge.identity] as? String
         if previous == challenge.fingerprint { acceptedFingerprint = challenge.fingerprint; return true }
+        if known[challenge.identity] == nil {
+            known[challenge.identity] = challenge.fingerprint
+            UserDefaults.standard.set(known, forKey: "trustedHostKeys")
+            acceptedFingerprint = challenge.fingerprint
+            return true
+        }
         return await withCheckedContinuation { continuation in
             hostTrustDecision = continuation
-            hostTrustRequest = HostTrustRequest(challenge: challenge, previous: previous)
+            hostTrustRequest = HostTrustRequest(challenge: challenge, previous: previous ?? "已保存的指纹无法读取")
         }
     }
 
     func trustHost() {
         guard let request = hostTrustRequest, connecting else { return }
-        var known = UserDefaults.standard.dictionary(forKey: "trustedHostKeys") as? [String: String] ?? [:]
+        var known = UserDefaults.standard.dictionary(forKey: "trustedHostKeys") ?? [:]
         known[request.challenge.identity] = request.challenge.fingerprint
         UserDefaults.standard.set(known, forKey: "trustedHostKeys")
         acceptedFingerprint = request.challenge.fingerprint
