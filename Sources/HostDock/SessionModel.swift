@@ -23,6 +23,7 @@ enum SessionOrigin { case interactive, automation }
 @MainActor
 final class SessionModel: ObservableObject, Identifiable {
     let id = UUID()
+    let startedAt: Date
     let origin: SessionOrigin
     let diagnostics: DiagnosticLog
     var diagnosticOrigin: DiagnosticOrigin { origin == .interactive ? .interactive : .automation }
@@ -118,7 +119,8 @@ final class SessionModel: ObservableObject, Identifiable {
 
     init(profile: ConnectionProfile, catalog: ConnectionCatalog, credentials: any CredentialStore,
          connection: any SessionConnection = LiveSessionConnection(), reservations: TransferReservations = TransferReservations(),
-         origin: SessionOrigin = .interactive, diagnostics: DiagnosticLog = .disabled) {
+         origin: SessionOrigin = .interactive, startedAt: Date = Date(), diagnostics: DiagnosticLog = .disabled) {
+        self.startedAt = startedAt
         self.diagnostics = diagnostics
         self.origin = origin
         self.visible = origin == .interactive

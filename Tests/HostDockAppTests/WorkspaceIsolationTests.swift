@@ -292,7 +292,7 @@ private func backgroundController(_ app: AppModel) async throws -> AutomationCon
     var incomplete = fixture.profiles[1]; incomplete.lastValidatedAt = nil
     try app.catalog.save(incomplete)
     let missing = await controller.handle(ControlRequest(command: "connect", arguments: ["profile": incomplete.id.uuidString]))
-    #expect(missing.error?.code == "AUTH_REQUIRED" && controller.connectionNotices[incomplete.id] != nil)
+    #expect(missing.error?.code == "AUTH_REQUIRED" && controller.connectionNotices.contains { $0.profileID == incomplete.id && $0.needsAuthentication })
     #expect(app.newProfile == draft && app.pickerSelection == selection && app.selectedSession === human)
     #expect(await failing.connects == 1)
     await controller.setEnabled(false); await app.shutdown()

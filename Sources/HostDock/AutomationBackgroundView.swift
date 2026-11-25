@@ -16,7 +16,8 @@ struct AutomationBackgroundButton: View {
             HStack(spacing: 6) {
                 Image(systemName: attention ? "exclamationmark.circle" : "terminal")
                 Text("AI 后台")
-                if !app.backgroundSessions.isEmpty { Text("\(app.backgroundSessions.count)").monospacedDigit() }
+                let count = app.backgroundSessions.count + controller.connectionNotices.count
+                if count > 0 { Text("\(count)").monospacedDigit() }
             }.font(.system(size: 12)).foregroundStyle(attention ? Color.orange : DockTheme.text)
         }.buttonStyle(DockButtonStyle()).help("查看和停止独立的 AI 后台连接")
             .popover(isPresented: $presented, arrowEdge: .bottom) {
@@ -51,6 +52,11 @@ struct AutomationBackgroundView: View {
             HStack {
                 Label("AI 后台", systemImage: "terminal").font(.headline)
                 Spacer()
+                if !showHistory {
+                    Button("清理已结束") { Task { await controller.clearFinishedConnections() } }
+                        .buttonStyle(DockButtonStyle()).disabled(!controller.canClearFinished)
+                        .help("移除已断开或失败的空闲连接，保留历史记录")
+                }
                 Text(controller.enabled ? "\(controller.activeCount) 个请求" : "未开启").font(.caption).foregroundStyle(DockTheme.secondary)
             }
             DockTabs(options: [(false, "当前连接"), (true, "历史记录")], selection: $showHistory)
@@ -103,27 +109,18 @@ struct AutomationBackgroundView: View {
                             Text("暂无历史记录").font(.system(size: 13)).foregroundStyle(DockTheme.secondary).padding(20)
                         }
                     } else {
-                    ForEach(app.backgroundSessions) { session in
-                        BackgroundSessionRow(session: session, operations: controller.operations(in: session),
-                                             stopping: controller.endingServers.contains(AutomationRecords.serverKey(session.profile.targetHost)),
-                                             stop: { Task { await controller.protectAndStop(session.id) } },
-                                             authenticate: { openAuthentication(session.profile) },
-                                             view: {
-                                                 if let record = history.record(sessionID: session.id) { openRecord(record) }
-                                             })
-                    }
-                    ForEach(controller.connectionNotices.keys.sorted(by: { $0.uuidString < $1.uuidString }), id: \.self) { id in
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text(app.catalog.profiles.first(where: { $0.id == id })?.name ?? "连接失败").font(.system(size: 13, weight: .semibold))
-                            Text(controller.connectionNotices[id] ?? "").font(.system(size: 12)).foregroundStyle(DockTheme.secondary).fixedSize(horizontal: false, vertical: true)
-                            HStack {
-                                if let profile = app.catalog.profiles.first(where: { $0.id == id }) {
-                                    Button("完善认证…") { openAuthentication(profile) }.buttonStyle(DockButtonStyle())
-                                }
-                                Button("清除提示") { controller.dismissNotice(id) }.buttonStyle(DockButtonStyle())
+                        ForEach(controller.currentConnections) { item in
+                            switch item {
+                            case .session(let session):
+                                BackgroundSessionRow(session: session, operations: controller.operations(in: session),
+                                    stopping: controller.endingServers.contains(AutomationRecords.serverKey(session.profile.targetHost)),
+                                    stop: { Task { await controller.protectAndStop(session.id) } },
+                                    authenticate: { openAuthentication(session.profile) },
+                                    view: { if let record = history.record(sessionID: session.id) { openRecord(record) } })
+                            case .notice(let notice):
+                                noticeRow(notice)
                             }
-                        }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(DockTheme.background, in: RoundedRectangle(cornerRadius: 8))
-                    }
+                        }
                     }
                 }
             }.frame(maxHeight: 380)
@@ -135,6 +132,20 @@ struct AutomationBackgroundView: View {
             .confirmationDialog("清空已结束且未打开查看的记录？保护状态将保留。", isPresented: $clearing) {
                 Button("清空历史", role: .destructive) { Task { await history.clearHistory() } }
             }
+    }
+
+    private func noticeRow(_ notice: BackgroundConnectionNotice) -> some View {
+        let profile = app.catalog.profiles.first { $0.id == notice.profileID }
+        return VStack(alignment: .leading, spacing: 10) {
+            Text(profile?.name ?? "连接失败").font(.system(size: 13, weight: .semibold))
+            Text(notice.message).font(.system(size: 12)).foregroundStyle(DockTheme.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                if notice.needsAuthentication, let profile {
+                    Button("完善认证…") { openAuthentication(profile) }.buttonStyle(DockButtonStyle())
+                }
+                Button("清除提示") { controller.dismissNotice(notice.id) }.buttonStyle(DockButtonStyle())
+            }
+        }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(DockTheme.background, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -161,7 +172,7 @@ private struct BackgroundSessionRow: View {
             if !operations.isEmpty { Text(operations.joined(separator: " · ")).font(.system(size: 11, design: .monospaced)).foregroundStyle(DockTheme.secondary) }
             if let request = session.hostTrustRequest { HostTrustCard(request: request, trust: session.trustHost) }
             if let conflict = session.conflictRequest { FileConflictCard(app: session, conflict: conflict) }
-            if session.passwordRequired { Button("完善认证…", action: authenticate).buttonStyle(DockButtonStyle()) }
+            if session.needsAuthentication { Button("完善认证…", action: authenticate).buttonStyle(DockButtonStyle()) }
             if let error = session.connectionError { DockNotice(text: error) }
             if session.transferring { HStack {
                 ProgressView(value: session.progress)

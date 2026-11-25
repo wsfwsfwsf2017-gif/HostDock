@@ -4,6 +4,41 @@ import Foundation
 import HostDockCore
 import SwiftUI
 
+struct BackgroundConnectionNotice: Identifiable {
+    let id: UUID
+    let profileID: UUID
+    let startedAt: Date
+    let message: String
+    let needsAuthentication: Bool
+
+    init(record: AutomationRecordHeader, profileID: UUID, message: String, needsAuthentication: Bool) {
+        id = record.id
+        startedAt = record.startedAt
+        self.profileID = profileID
+        self.message = message
+        self.needsAuthentication = needsAuthentication
+    }
+}
+
+enum BackgroundConnectionItem: Identifiable {
+    case session(SessionModel)
+    case notice(BackgroundConnectionNotice)
+
+    var id: UUID {
+        switch self {
+        case .session(let session): session.id
+        case .notice(let notice): notice.id
+        }
+    }
+
+    var startedAt: Date {
+        switch self {
+        case .session(let session): session.startedAt
+        case .notice(let notice): notice.startedAt
+        }
+    }
+}
+
 @MainActor
 final class AutomationController: ObservableObject {
     @Published private(set) var enabled = false
@@ -22,7 +57,43 @@ final class AutomationController: ObservableObject {
     private var recordedRequests: [UUID: AutomationRecord] = [:]
     private var stoppedRequests: [UUID: AutomationProtection] = [:]
     let records: AutomationRecords
-    @Published private(set) var connectionNotices: [UUID: String] = [:]
+    @Published private(set) var connectionNotices: [BackgroundConnectionNotice] = []
+    @Published private(set) var clearingFinished = false
+
+    var currentConnections: [BackgroundConnectionItem] {
+        let sessions = (app?.backgroundSessions ?? []).map(BackgroundConnectionItem.session)
+        return (sessions + connectionNotices.map(BackgroundConnectionItem.notice)).sorted {
+            if $0.startedAt == $1.startedAt { return $0.id.uuidString < $1.id.uuidString }
+            return $0.startedAt > $1.startedAt
+        }
+    }
+
+    private func canClear(_ session: SessionModel) -> Bool {
+        !session.connected && !session.busy && !session.needsAuthentication && session.hostTrustRequest == nil
+            && session.conflictRequest == nil && !session.waitingForTarget && !session.fileQueue.paused
+            && session.automationRequests == 0 && operations(in: session).isEmpty
+            && !endingServers.contains(AutomationRecords.serverKey(session.profile.targetHost))
+    }
+
+    var canClearFinished: Bool {
+        guard !clearingFinished, !changing, let app, !app.shuttingDown else { return false }
+        return connectionNotices.contains { !$0.needsAuthentication } || app.backgroundSessions.contains(where: { canClear($0) })
+    }
+
+    func clearFinishedConnections() async {
+        guard canClearFinished, let app else { return }
+        clearingFinished = true
+        defer { clearingFinished = false }
+        connectionNotices.removeAll { !$0.needsAuthentication }
+        let candidates = app.backgroundSessions.filter { canClear($0) }
+        for session in candidates {
+            guard !app.shuttingDown, !changing else { return }
+            if canClear(session), app.backgroundSessions.contains(where: { $0.id == session.id }) {
+                await app.closeSession(session, reason: session.connectionError ?? "已断开")
+            }
+        }
+    }
+
     init(app: AppModel, defaults: UserDefaults = .standard, socketURL: URL = ControlSocket.url) {
         self.app = app; self.defaults = defaults; self.socketURL = socketURL; self.records = app.automationRecords
     }
@@ -93,9 +164,11 @@ final class AutomationController: ObservableObject {
         catch { notice = "连接已结束，本次保护已生效，但未能完整保存；重启后的保护未获保证：\(error.localizedDescription)" }
     }
 
-    func dismissNotice(_ profileID: UUID) { connectionNotices.removeValue(forKey: profileID) }
+    func dismissNotice(_ id: UUID) { connectionNotices.removeAll { $0.id == id } }
     func operations(in session: SessionModel) -> [String] {
-        requests.values.filter { $0.arguments["session"] == session.id.uuidString || connectingRequests[$0.id] == session.id }.map(\.command).sorted()
+        requests.values.filter {
+            $0.arguments["session"].flatMap(UUID.init(uuidString:)) == session.id || connectingRequests[$0.id] == session.id
+        }.map(\.command).sorted()
     }
     func handle(_ request: ControlRequest) async -> ControlResponse {
         guard enabled, app?.shuttingDown == false else { return ControlResponse(request.id, error: ControlFailure("DISABLED", "请先在设置中开启「允许 AI 操作 HostDock」。")) }
@@ -302,12 +375,12 @@ final class AutomationController: ObservableObject {
         beginRecording(request, record: record)
         await app.refreshSavedConnections()
         guard app.readyProfileIDs.contains(id) else {
-            connectionNotices[id] = "请完善认证并验证保存，然后重新发起后台连接。"
+            connectionNotices.append(BackgroundConnectionNotice(record: record.header, profileID: id,
+                message: "请完善认证并验证保存，然后重新发起后台连接。", needsAuthentication: true))
             throw ControlFailure("AUTH_REQUIRED", "请在应用中补齐并验证认证资料。")
         }
         try Task.checkCancellation()
         try checkProtection(host: profile.targetHost)
-        connectionNotices.removeValue(forKey: id)
         let session = try app.connectBackground(profile: profile, record: record)
         connectingRequests[request.id] = session.id
         session.automationRequests += 1
@@ -315,7 +388,10 @@ final class AutomationController: ObservableObject {
         do {
             for _ in 0..<9000 {
                 try Task.checkCancellation()
-                if session.connected { return summary(session) }
+                if session.connected {
+                    connectionNotices.removeAll { $0.profileID == id && $0.needsAuthentication && $0.startedAt <= record.header.startedAt }
+                    return summary(session)
+                }
                 if session.hostTrustRequest != nil || session.passwordRequired {
                     return .object(["state": .string("needs_user_action"), "sessionId": .string(session.id.uuidString), "message": .string("请在 HostDock 中核对变化的指纹或更新认证，然后通过 sessions list 查看状态。")])
                 }
@@ -324,10 +400,12 @@ final class AutomationController: ObservableObject {
             }
             throw ControlFailure("TIMEOUT", "连接超时。")
         } catch {
-            if !(error is CancellationError) { connectionNotices[id] = error.localizedDescription }
+            let failure = BackgroundConnectionNotice(record: record.header, profileID: id, message: error.localizedDescription,
+                                                     needsAuthentication: session.needsAuthentication)
             if app.backgroundSessions.contains(where: { $0.id == session.id }) {
                 await app.closeSession(session, reason: requestProtection(request) == nil ? error.localizedDescription : "用户结束并保护 5 分钟")
             }
+            if !(error is CancellationError) { connectionNotices.append(failure) }
             throw error
         }
     }

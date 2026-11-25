@@ -345,9 +345,10 @@ final class AppModel: ObservableObject {
         guard !shuttingDown, !updatingRecords else { throw HostDockError("应用正在处理连接资料，请稍后重试。") }
         let resolved = try catalog.resolve(profile)
         _ = try catalog.validate(resolved.profile)
-        let session = SessionModel(profile: resolved.profile, catalog: catalog, credentials: credentials,
-                                   connection: makeConnection(), reservations: reservations, origin: .automation, diagnostics: diagnostics)
         let record = record ?? automationRecords.begin(profile: resolved.profile)
+        let session = SessionModel(profile: resolved.profile, catalog: catalog, credentials: credentials,
+                                   connection: makeConnection(), reservations: reservations, origin: .automation,
+                                   startedAt: record.header.startedAt, diagnostics: diagnostics)
         automationRecords.bind(record, sessionID: session.id)
         session.onTerminalOutput = { [weak history = automationRecords, weak record] data in
             if let record { history?.emit(record, kind: .terminal, data: data) }
