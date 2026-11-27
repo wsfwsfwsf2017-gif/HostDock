@@ -9,7 +9,8 @@ struct AutomationRecordView: View {
     init(app: AppModel, record: AutomationRecord) { self.app = app; self.record = record; automation = app.automation }
     private var session: SessionModel? { app.backgroundSessions.first { $0.id == record.header.sessionID } }
     var body: some View {
-        VStack(spacing: 0) {
+        record.openTrace?.mark(.recordPaneBodyEntered)
+        return VStack(spacing: 0) {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(record.header.name).font(.system(size: 13, weight: .semibold)).lineLimit(1).help(record.header.name)
@@ -38,10 +39,10 @@ struct AutomationRecordView: View {
                 if record.hasTerminal { TerminalSurface(controller: record.terminal()).padding(8) }
                 else { ContentUnavailableView("暂无交互终端输出", systemImage: "terminal", description: Text("命令结果可在「操作记录」中查看")) }
             } else {
-                AutomationRecordText(text: operationText)
+                AutomationRecordText(text: operationText, trace: record.openTrace)
             }
         }.background(DockTheme.surface).foregroundStyle(DockTheme.text)
-            .onAppear { app.diagnostics.record(.recordViewAppeared, id: record.id, layout: app.workspace.layout.rawValue) }
+            .onAppear { app.diagnostics.record(.recordViewAppeared, id: record.id, relatedID: record.openTrace?.id, layout: app.workspace.layout.rawValue) }
             .onDisappear { app.diagnostics.record(.recordViewDisappeared, id: record.id) }
     }
     private var operationText: String {
@@ -68,8 +69,22 @@ struct AutomationRecordView: View {
 
 private struct AutomationRecordText: NSViewRepresentable {
     let text: String
-    func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSScrollView()
+    let trace: RecordOpenTrace?
+
+    final class RecordScrollView: NSScrollView {
+        weak var firstLayoutTrace: RecordOpenTrace?
+        override func layout() {
+            guard let trace = firstLayoutTrace, window != nil else { super.layout(); return }
+            firstLayoutTrace = nil
+            trace.mark(.recordTextFirstLayoutStarted)
+            super.layout()
+            trace.mark(.recordTextFirstLayoutFinished)
+        }
+    }
+
+    func makeNSView(context: Context) -> RecordScrollView {
+        let scroll = RecordScrollView()
+        scroll.firstLayoutTrace = trace
         let view = NSTextView()
         view.isEditable = false; view.isSelectable = true; view.isRichText = false
         view.usesFindBar = true; view.isIncrementalSearchingEnabled = true
@@ -81,7 +96,7 @@ private struct AutomationRecordText: NSViewRepresentable {
         scroll.hasVerticalScroller = true; scroll.documentView = view
         return scroll
     }
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
+    func updateNSView(_ scroll: RecordScrollView, context: Context) {
         guard let view = scroll.documentView as? NSTextView else { return }
         view.textColor = DockTheme.textNS; view.backgroundColor = DockTheme.surfaceNS
         scroll.backgroundColor = DockTheme.surfaceNS
@@ -100,7 +115,8 @@ struct AutomationRecordTab: View {
     @ObservedObject var record: AutomationRecord
     private var region: Int? { app.workspace.slots.prefix(app.workspace.layout.rawValue).firstIndex(of: record.id) }
     var body: some View {
-        HStack(spacing: 0) {
+        record.openTrace?.mark(.recordTabBodyEntered)
+        return HStack(spacing: 0) {
             Button { app.selectTab(record.id); NSApp.keyWindow?.makeFirstResponder(nil) } label: {
                 HStack(spacing: 7) {
                     Image(systemName: "eye")

@@ -6,6 +6,9 @@ enum DiagnosticEvent: String, Codable, Sendable {
     case fileQueued, fileExecuting
     case runStarted, runEnded, operationStarted, operationFinished, cancelled
     case viewRecordClicked, popoverDismissRequested, popoverDisappeared
+    case popoverDismissBindingCleared, popoverWillClose, popoverDidClose
+    case recordFocusResetStarted, recordFocusResetFinished, recordTabBodyEntered, recordPaneBodyEntered
+    case recordTextFirstLayoutStarted, recordTextFirstLayoutFinished
     case recordTabCreateRequested, recordTabCreated, recordTabLocated, recordTabClosed, recordViewAppeared, recordViewDisappeared
     case tabSelected, layoutChanged, paneFocused, tabScrollStarted, tabScrollFinished
 }
@@ -17,6 +20,7 @@ enum DiagnosticOperation: String, Codable, Sendable {
 }
 
 enum DiagnosticOrigin: String, Codable, Sendable { case interactive, automation }
+enum DiagnosticFocusWindow: String, Codable, Sendable { case noKeyWindow, sourcePopover, mainWindow, otherWindow }
 enum DiagnosticFailure: String, Codable, Sendable {
     case cancelled, authentication, keyFile, keyFormat, keyPassphrase, hostTrust, network, sftp, protectedServer, conflict, io, other
 }
@@ -43,6 +47,9 @@ struct DiagnosticEntry: Codable, Sendable {
     var count: Int?
     var durationMS: Int?
     var failure: DiagnosticFailure?
+    var popoverVisible: Bool?
+    var focusWindow: DiagnosticFocusWindow?
+    var focusAccepted: Bool?
 }
 
 struct DiagnosticRun: Codable, Sendable {
@@ -152,12 +159,17 @@ final class DiagnosticLog: @unchecked Sendable {
     func finish(_ span: DiagnosticSpan, failure: DiagnosticFailure? = nil, count: Int? = nil) {
         record(.operationFinished, id: span.id, relatedID: span.object, operation: span.operation, origin: span.origin,
                count: count, durationMS: Int(max(0, ProcessInfo.processInfo.systemUptime - span.started) * 1000), failure: failure)
-        if directory != nil { queue.async { self.aliases.removeValue(forKey: span.id) } }
+        retireAlias(span.id)
+    }
+
+    func retireAlias(_ id: UUID) {
+        if directory != nil { queue.async { self.aliases.removeValue(forKey: id) } }
     }
 
     func record(_ event: DiagnosticEvent, id: UUID? = nil, relatedID: UUID? = nil, operation: DiagnosticOperation? = nil,
                 origin: DiagnosticOrigin? = nil, layout: Int? = nil, tabs: Int? = nil, count: Int? = nil,
-                durationMS: Int? = nil, failure: DiagnosticFailure? = nil, critical: Bool = false) {
+                durationMS: Int? = nil, failure: DiagnosticFailure? = nil, popoverVisible: Bool? = nil,
+                focusWindow: DiagnosticFocusWindow? = nil, focusAccepted: Bool? = nil, critical: Bool = false) {
         guard directory != nil else { return }
         let time = Date().timeIntervalSince1970, uptime = ProcessInfo.processInfo.systemUptime
         let write: @Sendable () -> Void = { [self] in
@@ -166,7 +178,8 @@ final class DiagnosticLog: @unchecked Sendable {
                 sequence += 1
                 let entry = DiagnosticEntry(sequence: sequence, time: time, uptime: uptime, event: event,
                     object: alias(id), related: alias(relatedID), operation: operation, origin: origin, layout: layout,
-                    tabs: tabs, count: count, durationMS: durationMS, failure: failure)
+                    tabs: tabs, count: count, durationMS: durationMS, failure: failure, popoverVisible: popoverVisible,
+                    focusWindow: focusWindow, focusAccepted: focusAccepted)
                 var data = try JSONEncoder().encode(entry); data.append(10)
                 guard data.count <= fileLimit else { throw POSIXError(.EFBIG) }
                 if try fileSize(eventURL()) + data.count > fileLimit { segment += 1 }

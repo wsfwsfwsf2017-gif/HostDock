@@ -54,6 +54,52 @@ private func diagnosticProcess(_ executable: String, _ arguments: [String]) thro
 
 @Suite(.serialized)
 struct DiagnosticsTests {
+    @Test @MainActor func recordOpenTraceMatchesThePopoverAndDistinguishesRepeatClicks() throws {
+        let fixture = try DiagnosticFixture(); defer { fixture.clean() }
+        let log = fixture.log(), recordID = UUID()
+        let source = NSWindow(), other = NSWindow()
+        source.isReleasedWhenClosed = false
+        other.isReleasedWhenClosed = false
+        defer { source.close(); other.close() }
+        func popover(in window: NSWindow) -> NSPopover {
+            let controller = NSViewController()
+            controller.view = NSView()
+            window.contentView = controller.view
+            let popover = NSPopover()
+            popover.contentViewController = controller
+            return popover
+        }
+        let target = popover(in: source), unrelated = popover(in: other)
+        func post(_ name: Notification.Name, _ popover: NSPopover) {
+            NotificationCenter.default.post(name: name, object: popover)
+        }
+        for _ in 0..<2 {
+            let trace = RecordOpenTrace(recordID: recordID, window: source, diagnostics: log)
+            #expect(trace.focusTarget(source) == .sourcePopover)
+            #expect(trace.focusTarget(nil) == .noKeyWindow)
+            trace.mark(.viewRecordClicked)
+            post(NSPopover.willCloseNotification, unrelated)
+            post(NSPopover.didCloseNotification, unrelated)
+            trace.mark(.recordPaneBodyEntered)
+            trace.mark(.recordPaneBodyEntered)
+            post(NSPopover.willCloseNotification, target)
+            post(NSPopover.didCloseNotification, unrelated)
+            #expect(try fixture.entries().last?.event == .popoverWillClose)
+            post(NSPopover.didCloseNotification, target)
+            trace.mark(.popoverDisappeared)
+        }
+        let rows = try fixture.entries().filter { $0.event != .runStarted }
+        let phases: [DiagnosticEvent] = [.viewRecordClicked, .recordPaneBodyEntered, .popoverWillClose, .popoverDidClose, .popoverDisappeared]
+        #expect(rows.map(\.event) == phases + phases)
+        #expect(Set(rows.compactMap(\.object)).count == 1)
+        #expect(Set(rows.compactMap(\.related)).count == 2)
+        for start in [0, phases.count] {
+            let attempt = rows.dropFirst(start).prefix(phases.count)
+            #expect(Set(attempt.compactMap(\.related)).count == 1)
+        }
+        #expect(rows.allSatisfy { $0.popoverVisible == false })
+    }
+
     @Test func concurrentEventsAreOrderedPrivateAndBounded() async throws {
         let fixture = try DiagnosticFixture(); defer { fixture.clean() }
         let log = fixture.log(), object = UUID()

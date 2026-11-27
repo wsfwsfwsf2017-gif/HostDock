@@ -71,4 +71,6 @@ swift scripts/install-app.swift <下载目录>/HostDock-$RELEASE_VERSION-arm64.z
 
 Release 构建保留函数与行号所需的调试信息，将工程根目录映射为 `/HostDock`、用户主目录映射为 `/BuildUser`。`scripts/archive-symbols.py` 从实际构建程序生成 dSYM，校验 ARM64、UUID 和 DWARF 后压缩到 `dist/Symbols/HostDock-X.Y.Z-buildN-UUID.zip`；App 仅包含 UUID 构建信息，不包含 dSYM。相同名称的不同内容拒绝覆盖。符号 ZIP 被 Git 排除；正式构建的 Actions 将其单独保留 90 天，不增加 Release 附件数量。公共仓库的 Actions 产物可能被他人下载，不在符号包中加入日志、业务数据或认证。
 
+分析「查看记录」时，从 `viewRecordClicked` 的匿名记录编号和点击编号（`object`、`related`）追踪该次打开。AppKit 的 `popoverWillClose`、`popoverDidClose` 跟踪来源浮窗；SwiftUI 的 `popoverDisappeared` 表示内容离开视图树。焦点重置前后、首次求值标签和记录页、操作记录文本视图的首次布局均有独立事件。存在 `popoverVisible` 时，它是该时刻原生窗口的可见状态。已显示的视图可能复用，缺少某项事件本身不能确定崩溃位置。
+
 分析崩溃时必须使用报告中程序 UUID 对应的符号 ZIP，不可拿最新构建的符号代替旧版。诊断会改变极少量执行时间，不应把未复现崩溃或添加日志本身当作修复证据。

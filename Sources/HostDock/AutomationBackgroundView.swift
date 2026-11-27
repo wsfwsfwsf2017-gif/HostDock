@@ -25,11 +25,12 @@ struct AutomationBackgroundButton: View {
                     app.diagnostics.record(.popoverDismissRequested, id: profile.id, critical: true)
                     presented = false
                     app.showProfile(profile, authenticating: true)
-                }, openRecord: { record in
-                    app.diagnostics.record(.viewRecordClicked, id: record.id, relatedID: record.header.sessionID, critical: true)
-                    app.diagnostics.record(.popoverDismissRequested, id: record.id, critical: true)
-                    presented = false; app.showRecord(record)
-                }).onDisappear { app.diagnostics.record(.popoverDisappeared) }
+                }, openRecord: { record, trace in
+                    trace.mark(.popoverDismissRequested)
+                    presented = false
+                    trace.mark(.popoverDismissBindingCleared)
+                    app.showRecord(record, trace: trace)
+                })
             }
     }
 }
@@ -39,11 +40,12 @@ struct AutomationBackgroundView: View {
     @ObservedObject var controller: AutomationController
     @ObservedObject private var history: AutomationRecords
     var openAuthentication: (ConnectionProfile) -> Void = { _ in }
-    var openRecord: (AutomationRecord) -> Void = { _ in }
+    var openRecord: (AutomationRecord, RecordOpenTrace) -> Void
+    @ViewState private var source = RecordPopoverAnchor.Source()
     @ViewState private var showHistory = false
     @ViewState private var clearing = false
     init(app: AppModel, controller: AutomationController, openAuthentication: @escaping (ConnectionProfile) -> Void = { _ in },
-         openRecord: @escaping (AutomationRecord) -> Void = { _ in }) {
+         openRecord: @escaping (AutomationRecord, RecordOpenTrace) -> Void = { _, _ in }) {
         self.app = app; self.controller = controller; self.history = app.automationRecords
         self.openAuthentication = openAuthentication; self.openRecord = openRecord
     }
@@ -98,7 +100,7 @@ struct AutomationBackgroundView: View {
                                 Text(record.header.startedAt.formatted(date: .abbreviated, time: .shortened) + " · " + (record.header.endReason ?? "已结束"))
                                     .font(.caption).foregroundStyle(DockTheme.secondary)
                                 HStack {
-                                    Button("查看记录") { openRecord(record) }.buttonStyle(DockButtonStyle())
+                                    Button("查看记录") { viewRecord(record) }.buttonStyle(DockButtonStyle())
                                     Spacer()
                                     Button("删除") { Task { await history.delete(record) } }.buttonStyle(.plain)
                                         .disabled(app.recordTabs.contains { $0.id == record.id })
@@ -116,7 +118,7 @@ struct AutomationBackgroundView: View {
                                     stopping: controller.endingServers.contains(AutomationRecords.serverKey(session.profile.targetHost)),
                                     stop: { Task { await controller.protectAndStop(session.id) } },
                                     authenticate: { openAuthentication(session.profile) },
-                                    view: { if let record = history.record(sessionID: session.id) { openRecord(record) } })
+                                    view: { if let record = history.record(sessionID: session.id) { viewRecord(record) } })
                             case .notice(let notice):
                                 noticeRow(notice)
                             }
@@ -129,9 +131,21 @@ struct AutomationBackgroundView: View {
             }
         }.padding(20).frame(width: 460).fixedSize(horizontal: false, vertical: true)
             .background(DockTheme.surface).foregroundStyle(DockTheme.text).tint(DockTheme.accent)
+            .background { RecordPopoverAnchor(source: source).frame(width: 0, height: 0).allowsHitTesting(false).accessibilityHidden(true) }
+            .onDisappear {
+                if let trace = source.opening { trace.mark(.popoverDisappeared) }
+                else { app.diagnostics.record(.popoverDisappeared) }
+            }
             .confirmationDialog("清空已结束且未打开查看的记录？保护状态将保留。", isPresented: $clearing) {
                 Button("清空历史", role: .destructive) { Task { await history.clearHistory() } }
             }
+    }
+
+    private func viewRecord(_ record: AutomationRecord) {
+        let trace = RecordOpenTrace(recordID: record.id, window: source.view?.window, diagnostics: app.diagnostics)
+        source.opening = trace
+        trace.mark(.viewRecordClicked)
+        openRecord(record, trace)
     }
 
     private func noticeRow(_ notice: BackgroundConnectionNotice) -> some View {

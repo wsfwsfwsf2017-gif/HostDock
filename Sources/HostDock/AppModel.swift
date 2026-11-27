@@ -249,17 +249,21 @@ final class AppModel: ObservableObject {
         return "\(session.profile.name) · \(index + 1)"
     }
 
-    func showRecord(_ record: AutomationRecord) {
+    func showRecord(_ record: AutomationRecord, trace: RecordOpenTrace? = nil) {
         guard !closingTabs, !shuttingDown else { return }
+        record.openTrace = trace
         diagnostics.record(recordTabs.contains(where: { $0.id == record.id }) ? .recordTabLocated : .recordTabCreateRequested,
                            id: record.id, relatedID: record.header.sessionID, layout: workspace.layout.rawValue,
                            tabs: workspaceTabIDs.count, critical: true)
         if !recordTabs.contains(where: { $0.id == record.id }) {
             recordTabs.append(record); workspaceTabIDs.append(record.id)
-            diagnostics.record(.recordTabCreated, id: record.id, tabs: workspaceTabIDs.count, critical: true)
+            diagnostics.record(.recordTabCreated, id: record.id, relatedID: trace?.id, tabs: workspaceTabIDs.count, critical: true)
         }
         selectTab(record.id)
-        NSApp.keyWindow?.makeFirstResponder(nil)
+        let window = NSApp.keyWindow
+        trace?.mark(.recordFocusResetStarted, focusWindow: trace?.focusTarget(window))
+        let accepted = window?.makeFirstResponder(nil)
+        trace?.mark(.recordFocusResetFinished, focusAccepted: accepted)
         Task { [weak self] in
             guard let self, self.recordTabs.contains(where: { $0.id == record.id }) else { return }
             await self.automationRecords.open(record)

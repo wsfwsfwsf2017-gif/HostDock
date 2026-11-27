@@ -156,6 +156,7 @@ final class AutomationRecord: ObservableObject, Identifiable {
     private(set) var loaded = false
     private var mirror: TerminalController?
     private var lastPublish = Date.distantPast
+    var openTrace: RecordOpenTrace?
     var nextSequence = 0
     var active: Bool { header.endedAt == nil }
     var displayAddress: String { header.host + " · " + header.username }
@@ -177,7 +178,7 @@ final class AutomationRecord: ObservableObject, Identifiable {
         for event in events where event.kind == .terminal { if let data = event.data { mirror?.feed(data) } }
         loading = false; revision += 1
     }
-    func unload() { loaded = false; events = []; mirror = nil; loading = false }
+    func unload() { openTrace = nil; loaded = false; events = []; mirror = nil; loading = false }
     func terminal() -> TerminalController {
         if let mirror { return mirror }
         let result = TerminalController(readOnly: true)
